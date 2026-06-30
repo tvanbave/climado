@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import logging
+import os
 
 import voluptuous as vol
 
+from homeassistant.components.frontend import add_extra_js_url
+from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall
-import homeassistant.helpers.config_validation as cv
 
 from .const import (
     ATTR_LEAD_MINUTES,
@@ -17,8 +19,11 @@ from .const import (
     PLATFORMS,
     SERVICE_CLEAR_PREARRIVAL,
     SERVICE_START_PREARRIVAL,
+    VERSION,
 )
 from .coordinator import ClimadoCoordinator
+
+CARD_URL = "/climado_static/climado-card.js"
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -33,6 +38,7 @@ _START_SCHEMA = vol.Schema(
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Climado from a config entry."""
+    await _register_frontend(hass)
     coordinator = ClimadoCoordinator(hass, entry)
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
 
@@ -89,3 +95,15 @@ def _register_services(hass: HomeAssistant) -> None:
     hass.services.async_register(
         DOMAIN, SERVICE_CLEAR_PREARRIVAL, _handle_clear, schema=vol.Schema({})
     )
+
+
+async def _register_frontend(hass: HomeAssistant) -> None:
+    """Serve and auto-load the climado-card Lovelace module (once)."""
+    if hass.data.get(f"{DOMAIN}_frontend"):
+        return
+    hass.data[f"{DOMAIN}_frontend"] = True
+    frontend_dir = os.path.join(os.path.dirname(__file__), "frontend")
+    await hass.http.async_register_static_paths(
+        [StaticPathConfig("/climado_static", frontend_dir, False)]
+    )
+    add_extra_js_url(hass, f"{CARD_URL}?v={VERSION}")

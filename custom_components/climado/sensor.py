@@ -98,6 +98,7 @@ class ClimadoSensor(CoordinatorEntity, SensorEntity):
         return {
             "applied_setpoint": data.get("applied"),
             "is_night": data.get("is_night"),
+            "night_away_allowed": data.get("night_away_allowed"),
             "prearrival_active": data.get("prearrival_active"),
             "prearrival_until": data.get("prearrival_until"),
             "manual_override": data.get("manual_mode"),

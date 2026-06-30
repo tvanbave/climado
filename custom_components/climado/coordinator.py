@@ -111,6 +111,8 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         self._prearrival_until: datetime | None = None
         self._prearrival_target: float | None = None
         self._last_present: datetime = dt_util.utcnow()
+        self._night_active: bool = False
+        self._night_away_allowed: bool = False
         self._unsub: list = []
 
     # ---- config access ----
@@ -238,6 +240,15 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         is_night = _in_window(now.time(), night_start, night_end)
         is_workday = self._is_workday()
 
+        # Night away-latch (Nest/ecobee style): only allow Away overnight if the
+        # house was already empty/away at the moment night began. Once anyone is
+        # present during the night, latch it off for the rest of the night.
+        if is_night and not self._night_active:
+            self._night_away_allowed = (not occupied) and self._away_elapsed()
+        self._night_active = is_night
+        if is_night and occupied:
+            self._night_away_allowed = False
+
         if self._prearrival_active() and occupied:
             self.clear_prearrival()
 
@@ -259,7 +270,12 @@ class ClimadoCoordinator(DataUpdateCoordinator):
             mode, target, reason = MODE_AWAY, away_temp, "manual_away"
         elif self._prearrival_active():
             mode, target, reason = MODE_PREARRIVAL, float(self._prearrival_target), "pre_arrival"
-        elif forced is None and not occupied and not is_night and self._away_elapsed():
+        elif (
+            forced is None
+            and not occupied
+            and self._away_elapsed()
+            and (not is_night or self._night_away_allowed)
+        ):
             mode, target, reason = MODE_AWAY, away_temp, "away"
         elif is_night and forced != MODE_HOME:
             target, reason = self._night_target(comfort_home)
@@ -311,6 +327,7 @@ class ClimadoCoordinator(DataUpdateCoordinator):
             "tier": tier,
             "occupied": occupied,
             "is_night": is_night,
+            "night_away_allowed": self._night_away_allowed,
             "vacation": self.vacation,
             "enabled": self.enabled,
             "manual_mode": self.manual_mode,

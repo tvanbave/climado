@@ -49,7 +49,7 @@ pre-arrival inline, no dialogs, and use them on dashboards/automations. The
 (thermostat / sensors / presence / occupancy / workday).
 
 ### Priority ladder (how the setpoint is chosen)
-`vacation` › `manual away` › `pre‑arrival` › `away` (daytime only) ›
+`vacation` › `manual away` › `pre‑arrival` › `away` (daytime, or overnight only if the house was already empty at the night boundary) ›
 `night bedroom‑tracking` (in the night window) › `home + rate offset` ›
 home comfort. **Away wins over the rate overlay — coast never stacks on a setback.**
 
@@ -69,22 +69,21 @@ Home 23.5 · Away 28 · Bedroom target 23 · Away delay 45 min · Night 23:00–
 Night clamp 19–25 · On‑peak coast +2.0 · Pre‑cool lead 90 min / depth 2.0 →
 reproduces the 21.5 pre‑cool / 25.5 on‑peak behaviour.
 
-## Lovelace card (M3 draft) — `www/climado-card.js`
+## Lovelace card — `climado-card`
 An Alarmo-style card: effective mode + reason, target vs. current temp, rate-tier
 and presence chips, mode buttons (auto/home/away/sleep/vacation), enable +
 vacation toggles, a **Heading home** pre-cool button, and a **TOU-style colored
 weekly rate grid** (weekday + weekend/holiday) you can tap to recolor hours.
 
-Register it:
-1. Copy `www/climado-card.js` into your HA `config/www/`.
-2. **Settings → Dashboards → ⋮ → Resources → Add** `/local/climado-card.js`
-   as a **JavaScript Module**.
-3. Add the card:
-   ```yaml
-   type: custom:climado-card
-   entity: select.climado_main_floor_mode   # any Climado entity; siblings auto-discovered
-   climate: climate.main_floor              # optional, shows current room temp
-   ```
+The card **ships with the integration and auto-loads** (served at
+`/climado_static/climado-card.js`) — no `www` copy or resource entry needed. Just
+add it to a dashboard:
+```yaml
+type: custom:climado-card
+entity: select.climado_main_floor_mode   # any Climado entity; siblings auto-discovered
+climate: climate.main_floor              # optional, shows current room temp
+```
+(If "Custom element doesn't exist" shows right after updating, hard-refresh the browser.)
 
 The **control surface works against the M1 backend now** (it just calls the
 select/switch/button services). The grid's **Save** calls `climado.set_rate_plan`,
