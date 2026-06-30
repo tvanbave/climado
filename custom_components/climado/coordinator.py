@@ -45,6 +45,7 @@ from .const import (
     CONF_PRECOOL_DEPTH,
     CONF_PRECOOL_LEAD,
     CONF_PRESENCE_ENTITIES,
+    CONF_RATE_PLAN,
     CONF_VACATION_TEMP,
     CONF_WORKDAY_SENSOR,
     DEFAULT_AWAY_DELAY,
@@ -72,7 +73,7 @@ from .const import (
     MODE_SLEEP,
     MODE_VACATION,
 )
-from .rate import default_ulo_plan, rate_offset
+from .rate import default_ulo_plan, plan_from_schedule, plan_to_dict, rate_offset
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -211,11 +212,18 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         return (dt_util.utcnow() - self._last_present) >= timedelta(minutes=delay)
 
     def _plan(self):
-        return default_ulo_plan(
-            float(self.tune(CONF_ONPEAK_COAST, DEFAULT_ONPEAK_COAST)),
-            int(self.tune(CONF_PRECOOL_LEAD, DEFAULT_PRECOOL_LEAD)),
-            float(self.tune(CONF_PRECOOL_DEPTH, DEFAULT_PRECOOL_DEPTH)),
-        )
+        coast = float(self.tune(CONF_ONPEAK_COAST, DEFAULT_ONPEAK_COAST))
+        lead = int(self.tune(CONF_PRECOOL_LEAD, DEFAULT_PRECOOL_LEAD))
+        depth = float(self.tune(CONF_PRECOOL_DEPTH, DEFAULT_PRECOOL_DEPTH))
+        custom = self.opt(CONF_RATE_PLAN)
+        if isinstance(custom, dict) and custom.get("weekday") and custom.get("weekend"):
+            try:
+                return plan_from_schedule(
+                    custom["weekday"], custom["weekend"], coast, lead, depth
+                )
+            except (ValueError, TypeError, KeyError):
+                _LOGGER.warning("Climado: invalid stored rate plan; using ULO default")
+        return default_ulo_plan(coast, lead, depth)
 
     def _night_target(self, comfort_home: float) -> tuple[float, str]:
         bed = self._get_float(self.opt(CONF_BEDROOM_TEMP_SENSOR))
@@ -262,7 +270,8 @@ class ClimadoCoordinator(DataUpdateCoordinator):
             MODE_HOME, MODE_AWAY, MODE_SLEEP, MODE_VACATION
         ) else None
 
-        tier = self._plan().tier_at(now, is_workday).name
+        plan = self._plan()
+        tier = plan.tier_at(now, is_workday).name
 
         if self.vacation or forced == MODE_VACATION:
             mode, target, reason = MODE_VACATION, vacation_temp, "vacation"
@@ -281,11 +290,13 @@ class ClimadoCoordinator(DataUpdateCoordinator):
             target, reason = self._night_target(comfort_home)
             mode = MODE_SLEEP
         else:
-            offset, rtier = rate_offset(self._plan(), now, is_workday)
+            offset, rtier = rate_offset(plan, now, is_workday)
             mode, target, reason = MODE_HOME, comfort_home + offset, f"home/{rtier}"
 
         applied = await self._apply(target)
-        return self._state(mode, reason, target, tier, occupied, is_night, applied)
+        return self._state(
+            mode, reason, target, tier, occupied, is_night, applied, plan_to_dict(plan)
+        )
 
     async def _apply(self, target):
         if target is None:
@@ -318,13 +329,14 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         _LOGGER.debug("Climado set %s -> %.1f", ent, value)
         return value
 
-    def _state(self, mode, reason, target, tier, occupied, is_night, applied=None) -> dict:
+    def _state(self, mode, reason, target, tier, occupied, is_night, applied=None, rate_plan=None) -> dict:
         return {
             "mode": mode,
             "reason": reason,
             "target": target,
             "applied": applied,
             "tier": tier,
+            "rate_plan": rate_plan,
             "occupied": occupied,
             "is_night": is_night,
             "night_away_allowed": self._night_away_allowed,

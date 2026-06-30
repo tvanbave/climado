@@ -92,14 +92,16 @@ class ClimadoSensor(CoordinatorEntity, SensorEntity):
 
     @property
     def extra_state_attributes(self):
-        if self.entity_description.key != "effective_mode":
-            return None
         data = self.coordinator.data or {}
-        return {
-            "applied_setpoint": data.get("applied"),
-            "is_night": data.get("is_night"),
-            "night_away_allowed": data.get("night_away_allowed"),
-            "prearrival_active": data.get("prearrival_active"),
-            "prearrival_until": data.get("prearrival_until"),
-            "manual_override": data.get("manual_mode"),
-        }
+        if self.entity_description.key == "effective_mode":
+            return {
+                "applied_setpoint": data.get("applied"),
+                "is_night": data.get("is_night"),
+                "night_away_allowed": data.get("night_away_allowed"),
+                "prearrival_active": data.get("prearrival_active"),
+                "prearrival_until": data.get("prearrival_until"),
+                "manual_override": data.get("manual_mode"),
+            }
+        if self.entity_description.key == "rate_tier":
+            return {"plan": data.get("rate_plan")}
+        return None

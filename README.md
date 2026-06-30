@@ -63,6 +63,7 @@ home comfort. **Away wins over the rate overlay — coast never stacks on a setb
 ## Services
 - `climado.start_pre_arrival` (`lead_minutes?`, `target?`, `only_if_above?`).
 - `climado.clear_pre_arrival`.
+- `climado.set_rate_plan` (`plan`: `{weekday, weekend}` of `[start, end, tier]` blocks).
 
 ## Defaults (parity with the prior `ulo_climate_controller` automation)
 Home 23.5 · Away 28 · Bedroom target 23 · Away delay 45 min · Night 23:00–07:00 ·
@@ -85,14 +86,14 @@ climate: climate.main_floor              # optional, shows current room temp
 ```
 (If "Custom element doesn't exist" shows right after updating, hard-refresh the browser.)
 
-The **control surface works against the M1 backend now** (it just calls the
-select/switch/button services). The grid's **Save** calls `climado.set_rate_plan`,
-which arrives with the **M2 backend** — until then the grid is a live
-visualization + draft editor and Save shows a notice instead of persisting.
+The **grid is fully editable**: tap hours to change tier, then **Save rate plan**
+persists it via `climado.set_rate_plan` (weekday + weekend/holiday schedules). The
+card reads the live plan back from the rate-tier sensor, and **Reset** reverts to
+the saved plan. On-peak coast and pre-cool lead/depth remain device number entities.
 
 ## Roadmap
-- **M2** Generalized multi‑tier rate plan (arbitrary tiers/times, TOU preset);
-  richer presence (per‑sensor debounce).
+- **M2 [done]** Editable rate-plan schedules persisted via `climado.set_rate_plan`
+  (arbitrary hour→tier over the 4 standard tiers). Future: custom tiers/ranks, TOU preset.
 - **M3** Bespoke Lovelace panel incl. a TOU‑style colored rate grid editor.
 - **M4** Multi‑zone; seasonal profiles; live price entity; geofence/temperature
   pre‑arrival; heating season.

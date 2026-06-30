@@ -4,7 +4,7 @@ from __future__ import annotations
 from homeassistant.const import Platform
 
 DOMAIN = "climado"
-VERSION = "0.2.1"
+VERSION = "0.3.0"
 
 PLATFORMS = [
     Platform.SELECT,
@@ -23,6 +23,7 @@ CONF_BEDROOM_TEMP_SENSOR = "bedroom_temp_sensor"
 CONF_PRESENCE_ENTITIES = "presence_entities"
 CONF_OCCUPANCY_ENTITIES = "occupancy_entities"
 CONF_WORKDAY_SENSOR = "workday_sensor"
+CONF_RATE_PLAN = "rate_plan"  # custom schedule {weekday:[[s,e,tier]...], weekend:[...]}
 
 CONF_COMFORT_HOME = "comfort_home"
 CONF_AWAY_TEMP = "away_temp"
@@ -82,6 +83,8 @@ SELECT_MODES = [MODE_AUTO, MODE_HOME, MODE_AWAY, MODE_SLEEP, MODE_VACATION]
 # ---- Services ----
 SERVICE_START_PREARRIVAL = "start_pre_arrival"
 SERVICE_CLEAR_PREARRIVAL = "clear_pre_arrival"
+SERVICE_SET_RATE_PLAN = "set_rate_plan"
+ATTR_PLAN = "plan"
 
 ATTR_LEAD_MINUTES = "lead_minutes"
 ATTR_TARGET = "target"

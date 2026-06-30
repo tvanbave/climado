@@ -36,3 +36,20 @@ start_pre_arrival:
 clear_pre_arrival:
   name: Clear pre-arrival
   description: Cancel an active pre-arrival pre-cool and recompute immediately.
+
+set_rate_plan:
+  name: Set rate plan
+  description: >-
+    Persist a custom TOU/ULO schedule (which hours map to which tier). Each block
+    is [start_hour, end_hour, tier_id]; tier_id is one of ultra_low / off_peak /
+    mid_peak / on_peak. On-peak coast and pre-cool are set via the device number
+    entities.
+  fields:
+    plan:
+      name: Plan
+      description: >-
+        {"weekday": [[0,7,"ultra_low"],[7,16,"mid_peak"],...],
+         "weekend": [[0,7,"ultra_low"],[7,23,"off_peak"],...]}
+      required: true
+      selector:
+        object:

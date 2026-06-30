@@ -137,8 +137,9 @@ class ClimadoCard extends LitElement {
     return s && s.attributes ? s.attributes[key] : undefined;
   }
 
-  _plan() {
-    return this._config.rate_plan || DEFAULT_PLAN;
+  _backendPlan(e) {
+    const attr = e && this._state(e.tier)?.attributes?.plan;
+    return attr || this._config.rate_plan || DEFAULT_PLAN;
   }
 
   // ---- actions ----
@@ -170,7 +171,7 @@ class ClimadoCard extends LitElement {
   }
 
   _paint(profile, hour) {
-    if (!this._draft) this._initDraft();
+    if (!this._draft) this._initDraft(this._entities());
     const cur = this._draft[profile][hour];
     const next = TIER_CYCLE[(TIER_CYCLE.indexOf(cur) + 1) % TIER_CYCLE.length];
     this._draft = {
@@ -179,8 +180,8 @@ class ClimadoCard extends LitElement {
     };
   }
 
-  _initDraft() {
-    const plan = this._plan();
+  _initDraft(e) {
+    const plan = this._backendPlan(e);
     this._draft = {
       weekday: blocksToHours(plan.weekday),
       weekend: blocksToHours(plan.weekend),
@@ -212,7 +213,7 @@ class ClimadoCard extends LitElement {
         ><div class="pad">Climado entity not found: ${this._config.entity}</div></ha-card
       >`;
     }
-    if (!this._draft) this._initDraft();
+    if (!this._draft) this._initDraft(e);
 
     const mode = this._state(e.mode)?.state || "auto";
     const eff = this._state(e.effective_mode)?.state || "—";
@@ -291,7 +292,7 @@ class ClimadoCard extends LitElement {
 
         <div class="row">
           <button class="action" @click=${this._save}>Save rate plan</button>
-          <button class="action ghost" @click=${this._initDraft}>Reset</button>
+          <button class="action ghost" @click=${() => this._initDraft(e)}>Reset</button>
         </div>
       </ha-card>
     `;
@@ -545,4 +546,4 @@ window.customCards.push({
   documentation: "https://github.com/tvanbave/climado",
 });
 
-console.info("%c CLIMADO-CARD %c 0.2.1 ", "background:#1565c0;color:#fff", "");
+console.info("%c CLIMADO-CARD %c 0.3.0 ", "background:#1565c0;color:#fff", "");

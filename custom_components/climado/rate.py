@@ -87,34 +87,86 @@ def rate_offset(plan: RatePlan, when: datetime, is_workday: bool) -> tuple[float
     return 0.0, f"tier:{current.tier_id}"
 
 
-def default_ulo_plan(
-    onpeak_coast: float, precool_lead: int, precool_depth: float
-) -> RatePlan:
+KNOWN_TIERS = ("ultra_low", "off_peak", "mid_peak", "on_peak")
+_TIER_META = {
+    "ultra_low": ("Ultra-low overnight", 0),
+    "off_peak": ("Off-peak (weekend/holiday)", 1),
+    "mid_peak": ("Mid-peak", 2),
+    "on_peak": ("On-peak", 3),
+}
+_EOD = time(23, 59, 59)
+
+
+def _tiers(onpeak_coast: float, precool_lead: int, precool_depth: float) -> dict[str, Tier]:
+    """The standard four tiers; on-peak carries the tunable coast/pre-cool."""
+    out: dict[str, Tier] = {}
+    for tid, (name, rank) in _TIER_META.items():
+        if tid == "on_peak":
+            out[tid] = Tier(
+                tid, name, rank,
+                coast_offset=onpeak_coast,
+                precool_lead=precool_lead,
+                precool_depth=precool_depth,
+            )
+        else:
+            out[tid] = Tier(tid, name, rank)
+    return out
+
+
+def _hour_to_time(h) -> time:
+    h = int(h)
+    return _EOD if h >= 24 else time(h, 0)
+
+
+def _time_to_hour(t: time) -> int:
+    return 24 if (t.hour == 23 and t.minute >= 59) else t.hour
+
+
+def normalize_schedule(rows) -> list[list]:
+    """Validate [[start_hour, end_hour, tier_id], ...]; raise ValueError if bad."""
+    out: list[list] = []
+    for row in rows:
+        if len(row) != 3:
+            raise ValueError(f"rate block must be [start, end, tier]: {row!r}")
+        start, end, tid = int(row[0]), int(row[1]), str(row[2])
+        if tid not in KNOWN_TIERS:
+            raise ValueError(f"unknown tier {tid!r}")
+        if not (0 <= start < end <= 24):
+            raise ValueError(f"invalid hours {start}-{end}")
+        out.append([start, end, tid])
+    if not out:
+        raise ValueError("empty schedule")
+    return out
+
+
+def plan_from_schedule(weekday, weekend, onpeak_coast, precool_lead, precool_depth) -> RatePlan:
+    """Build a plan from arbitrary hour->tier schedules."""
+    blocks = lambda rows: [(_hour_to_time(s), _hour_to_time(e), t) for s, e, t in rows]
+    return RatePlan(
+        tiers=_tiers(onpeak_coast, precool_lead, precool_depth),
+        weekday=blocks(weekday),
+        weekend=blocks(weekend),
+    )
+
+
+def plan_to_dict(plan: RatePlan) -> dict:
+    """Serialize a plan's schedules back to hour-int blocks (for the UI)."""
+    rows = lambda blocks: [[_time_to_hour(s), _time_to_hour(e), t] for s, e, t in blocks]
+    return {"weekday": rows(plan.weekday), "weekend": rows(plan.weekend)}
+
+
+def default_ulo_plan(onpeak_coast: float, precool_lead: int, precool_depth: float) -> RatePlan:
     """Ontario ULO preset with user-tunable on-peak coast / pre-cool."""
-    tiers = {
-        "ultra_low": Tier("ultra_low", "Ultra-low overnight", 0),
-        "off_peak": Tier("off_peak", "Off-peak (weekend/holiday)", 1),
-        "mid_peak": Tier("mid_peak", "Mid-peak", 2),
-        "on_peak": Tier(
-            "on_peak",
-            "On-peak",
-            3,
-            coast_offset=onpeak_coast,
-            precool_lead=precool_lead,
-            precool_depth=precool_depth,
-        ),
-    }
-    eod = time(23, 59, 59)
     weekday = [
-        (time(0, 0), time(7, 0), "ultra_low"),
-        (time(7, 0), time(16, 0), "mid_peak"),
-        (time(16, 0), time(21, 0), "on_peak"),
-        (time(21, 0), time(23, 0), "mid_peak"),
-        (time(23, 0), eod, "ultra_low"),
+        [0, 7, "ultra_low"],
+        [7, 16, "mid_peak"],
+        [16, 21, "on_peak"],
+        [21, 23, "mid_peak"],
+        [23, 24, "ultra_low"],
     ]
     weekend = [
-        (time(0, 0), time(7, 0), "ultra_low"),
-        (time(7, 0), time(23, 0), "off_peak"),
-        (time(23, 0), eod, "ultra_low"),
+        [0, 7, "ultra_low"],
+        [7, 23, "off_peak"],
+        [23, 24, "ultra_low"],
     ]
-    return RatePlan(tiers=tiers, weekday=weekday, weekend=weekend)
+    return plan_from_schedule(weekday, weekend, onpeak_coast, precool_lead, precool_depth)

@@ -14,14 +14,18 @@ from homeassistant.core import HomeAssistant, ServiceCall
 from .const import (
     ATTR_LEAD_MINUTES,
     ATTR_ONLY_IF_ABOVE,
+    ATTR_PLAN,
     ATTR_TARGET,
+    CONF_RATE_PLAN,
     DOMAIN,
     PLATFORMS,
     SERVICE_CLEAR_PREARRIVAL,
+    SERVICE_SET_RATE_PLAN,
     SERVICE_START_PREARRIVAL,
     VERSION,
 )
 from .coordinator import ClimadoCoordinator
+from .rate import normalize_schedule
 
 CARD_URL = "/climado_static/climado-card.js"
 
@@ -34,6 +38,8 @@ _START_SCHEMA = vol.Schema(
         vol.Optional(ATTR_ONLY_IF_ABOVE): vol.All(vol.Coerce(float), vol.Range(min=10, max=40)),
     }
 )
+
+_SET_PLAN_SCHEMA = vol.Schema({vol.Required(ATTR_PLAN): dict})
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -65,7 +71,11 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         coordinator: ClimadoCoordinator = hass.data[DOMAIN].pop(entry.entry_id)
         await coordinator.async_unload()
         if not hass.data[DOMAIN]:
-            for service in (SERVICE_START_PREARRIVAL, SERVICE_CLEAR_PREARRIVAL):
+            for service in (
+                SERVICE_START_PREARRIVAL,
+                SERVICE_CLEAR_PREARRIVAL,
+                SERVICE_SET_RATE_PLAN,
+            ):
                 hass.services.async_remove(DOMAIN, service)
     return unloaded
 
@@ -89,11 +99,29 @@ def _register_services(hass: HomeAssistant) -> None:
             coordinator.clear_prearrival()
             await coordinator.async_request_refresh()
 
+    async def _handle_set_plan(call: ServiceCall) -> None:
+        raw = call.data[ATTR_PLAN]
+        try:
+            norm = {
+                "weekday": normalize_schedule(raw["weekday"]),
+                "weekend": normalize_schedule(raw["weekend"]),
+            }
+        except (KeyError, TypeError, ValueError) as err:
+            raise vol.Invalid(f"invalid rate plan: {err}") from err
+        for coordinator in hass.data.get(DOMAIN, {}).values():
+            entry = coordinator.entry
+            hass.config_entries.async_update_entry(
+                entry, options={**entry.options, CONF_RATE_PLAN: norm}
+            )
+
     hass.services.async_register(
         DOMAIN, SERVICE_START_PREARRIVAL, _handle_start, schema=_START_SCHEMA
     )
     hass.services.async_register(
         DOMAIN, SERVICE_CLEAR_PREARRIVAL, _handle_clear, schema=vol.Schema({})
+    )
+    hass.services.async_register(
+        DOMAIN, SERVICE_SET_RATE_PLAN, _handle_set_plan, schema=_SET_PLAN_SCHEMA
     )
 
 
