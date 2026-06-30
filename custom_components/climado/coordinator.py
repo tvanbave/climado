@@ -4,12 +4,15 @@ A single ``DataUpdateCoordinator`` evaluates the priority ladder on a 15-minute
 tick and on any presence/occupancy state change, then writes the resolved
 cooling setpoint to the underlying climate entity.
 
-Priority ladder (FR3):
-    manual_hold(*) > pre_arrival > vacation > away > night bedroom-tracking
-    > rate-engine overlay (home) > mode default
+Scalar settings (setpoints, timeouts, rate knobs, night window) are "tunables":
+they are exposed as number/time entities (entity_category=config) which own the
+live value and write it into ``self.tunables``; the config entry options provide
+the initial seed / fallback. Structural settings (the climate + sensors) stay in
+the config entry and are edited via the options flow.
 
-(*) external/manual holds are not contested in M1 — the engine owns the
-setpoint while enabled.
+Priority ladder (FR3):
+    vacation > manual-away > pre_arrival > away(daytime) > night bedroom-tracking
+    > rate-engine overlay (home) > mode default
 """
 from __future__ import annotations
 
@@ -77,7 +80,9 @@ SCAN_INTERVAL = timedelta(minutes=15)
 _UNAVAILABLE = ("unknown", "unavailable", "", None)
 
 
-def _parse_time(value: str) -> time:
+def _parse_time(value) -> time:
+    if isinstance(value, time):
+        return value
     parts = [int(p) for p in str(value).split(":")]
     while len(parts) < 3:
         parts.append(0)
@@ -98,10 +103,11 @@ class ClimadoCoordinator(DataUpdateCoordinator):
             hass, _LOGGER, name=f"{DOMAIN}:{entry.title}", update_interval=SCAN_INTERVAL
         )
         self.entry = entry
-        # Runtime, user-controllable state (restored by switch/select entities).
         self.enabled: bool = True
         self.vacation: bool = False
         self.manual_mode: str = "auto"
+        # Tunables owned by the number/time entities; seeded from options.
+        self.tunables: dict[str, object] = {}
         self._prearrival_until: datetime | None = None
         self._prearrival_target: float | None = None
         self._last_present: datetime = dt_util.utcnow()
@@ -116,8 +122,17 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         value = self.options.get(key, default)
         return default if value is None else value
 
+    def tune(self, key, default=None):
+        """Live tunable value (entity-owned), falling back to options/default."""
+        if key in self.tunables and self.tunables[key] is not None:
+            return self.tunables[key]
+        return self.opt(key, default)
+
+    def set_tunable(self, key, value) -> None:
+        self.tunables[key] = value
+
     # ---- lifecycle ----
-    async def async_setup(self) -> None:
+    async def async_setup_listeners(self) -> None:
         watch = list(self.opt(CONF_PRESENCE_ENTITIES, [])) + list(
             self.opt(CONF_OCCUPANCY_ENTITIES, [])
         )
@@ -127,7 +142,6 @@ class ClimadoCoordinator(DataUpdateCoordinator):
                     self.hass, watch, self._handle_sensor_event
                 )
             )
-        await self.async_config_entry_first_refresh()
 
     async def async_unload(self) -> None:
         for unsub in self._unsub:
@@ -139,32 +153,14 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         self.hass.async_create_task(self.async_request_refresh())
 
     # ---- pre-arrival API ----
-    def start_prearrival(
-        self, lead_minutes=None, target=None, only_if_above=None
-    ) -> bool:
-        lead = int(
-            lead_minutes
-            if lead_minutes is not None
-            else self.opt(CONF_PREARRIVAL_LEAD, DEFAULT_PREARRIVAL_LEAD)
-        )
-        tgt = float(
-            target
-            if target is not None
-            else self.opt(CONF_PREARRIVAL_TARGET, DEFAULT_PREARRIVAL_TARGET)
-        )
-        threshold = (
-            only_if_above
-            if only_if_above is not None
-            else self.opt(CONF_PREARRIVAL_ONLY_IF_ABOVE, DEFAULT_PREARRIVAL_ONLY_IF_ABOVE)
-        )
+    def start_prearrival(self, lead_minutes=None, target=None, only_if_above=None) -> bool:
+        lead = int(lead_minutes if lead_minutes is not None else self.tune(CONF_PREARRIVAL_LEAD, DEFAULT_PREARRIVAL_LEAD))
+        tgt = float(target if target is not None else self.tune(CONF_PREARRIVAL_TARGET, DEFAULT_PREARRIVAL_TARGET))
+        threshold = only_if_above if only_if_above is not None else self.tune(CONF_PREARRIVAL_ONLY_IF_ABOVE, DEFAULT_PREARRIVAL_ONLY_IF_ABOVE)
         if threshold is not None:
             current = self._get_float(self.opt(CONF_MAIN_TEMP_SENSOR))
             if current is not None and current <= float(threshold):
-                _LOGGER.info(
-                    "Climado pre-arrival skipped: house %.1f <= threshold %.1f",
-                    current,
-                    float(threshold),
-                )
+                _LOGGER.info("Climado pre-arrival skipped: house %.1f <= %.1f", current, float(threshold))
                 return False
         self._prearrival_until = dt_util.utcnow() + timedelta(minutes=lead)
         self._prearrival_target = tgt
@@ -175,10 +171,7 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         self._prearrival_target = None
 
     def _prearrival_active(self) -> bool:
-        return (
-            self._prearrival_until is not None
-            and dt_util.utcnow() < self._prearrival_until
-        )
+        return self._prearrival_until is not None and dt_util.utcnow() < self._prearrival_until
 
     # ---- helpers ----
     def _get_float(self, entity_id):
@@ -209,17 +202,17 @@ class ClimadoCoordinator(DataUpdateCoordinator):
             state = self.hass.states.get(ent)
             if state is not None and state.state not in _UNAVAILABLE:
                 return state.state == "on"
-        return dt_util.now().weekday() < 5  # fallback Mon-Fri
+        return dt_util.now().weekday() < 5
 
     def _away_elapsed(self) -> bool:
-        delay = int(self.opt(CONF_AWAY_DELAY, DEFAULT_AWAY_DELAY))
+        delay = int(self.tune(CONF_AWAY_DELAY, DEFAULT_AWAY_DELAY))
         return (dt_util.utcnow() - self._last_present) >= timedelta(minutes=delay)
 
     def _plan(self):
         return default_ulo_plan(
-            float(self.opt(CONF_ONPEAK_COAST, DEFAULT_ONPEAK_COAST)),
-            int(self.opt(CONF_PRECOOL_LEAD, DEFAULT_PRECOOL_LEAD)),
-            float(self.opt(CONF_PRECOOL_DEPTH, DEFAULT_PRECOOL_DEPTH)),
+            float(self.tune(CONF_ONPEAK_COAST, DEFAULT_ONPEAK_COAST)),
+            int(self.tune(CONF_PRECOOL_LEAD, DEFAULT_PRECOOL_LEAD)),
+            float(self.tune(CONF_PRECOOL_DEPTH, DEFAULT_PRECOOL_DEPTH)),
         )
 
     def _night_target(self, comfort_home: float) -> tuple[float, str]:
@@ -227,9 +220,9 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         main = self._get_float(self.opt(CONF_MAIN_TEMP_SENSOR))
         if bed is None or main is None:
             return comfort_home, "night/fallback"
-        target = float(self.opt(CONF_BEDROOM_TARGET, DEFAULT_BEDROOM_TARGET)) - bed + main
-        lo = float(self.opt(CONF_NIGHT_CLAMP_MIN, DEFAULT_NIGHT_CLAMP_MIN))
-        hi = float(self.opt(CONF_NIGHT_CLAMP_MAX, DEFAULT_NIGHT_CLAMP_MAX))
+        target = float(self.tune(CONF_BEDROOM_TARGET, DEFAULT_BEDROOM_TARGET)) - bed + main
+        lo = float(self.tune(CONF_NIGHT_CLAMP_MIN, DEFAULT_NIGHT_CLAMP_MIN))
+        hi = float(self.tune(CONF_NIGHT_CLAMP_MAX, DEFAULT_NIGHT_CLAMP_MAX))
         target = min(hi, max(lo, target))
         return round(target * 2) / 2, "night/bedroom"
 
@@ -240,30 +233,26 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         if occupied:
             self._last_present = dt_util.utcnow()
 
-        night_start = _parse_time(self.opt(CONF_NIGHT_START, DEFAULT_NIGHT_START))
-        night_end = _parse_time(self.opt(CONF_NIGHT_END, DEFAULT_NIGHT_END))
+        night_start = _parse_time(self.tune(CONF_NIGHT_START, DEFAULT_NIGHT_START))
+        night_end = _parse_time(self.tune(CONF_NIGHT_END, DEFAULT_NIGHT_END))
         is_night = _in_window(now.time(), night_start, night_end)
         is_workday = self._is_workday()
 
         if self._prearrival_active() and occupied:
-            self.clear_prearrival()  # arrived
+            self.clear_prearrival()
 
         if not self.enabled:
             return self._state(MODE_DISABLED, "disabled", None, None, occupied, is_night)
 
-        comfort_home = float(self.opt(CONF_COMFORT_HOME, DEFAULT_COMFORT_HOME))
-        away_temp = float(self.opt(CONF_AWAY_TEMP, DEFAULT_AWAY_TEMP))
-        vacation_temp = float(self.opt(CONF_VACATION_TEMP, DEFAULT_VACATION_TEMP))
+        comfort_home = float(self.tune(CONF_COMFORT_HOME, DEFAULT_COMFORT_HOME))
+        away_temp = float(self.tune(CONF_AWAY_TEMP, DEFAULT_AWAY_TEMP))
+        vacation_temp = float(self.tune(CONF_VACATION_TEMP, DEFAULT_VACATION_TEMP))
         forced = self.manual_mode if self.manual_mode in (
-            MODE_HOME,
-            MODE_AWAY,
-            MODE_SLEEP,
-            MODE_VACATION,
+            MODE_HOME, MODE_AWAY, MODE_SLEEP, MODE_VACATION
         ) else None
 
         tier = self._plan().tier_at(now, is_workday).name
 
-        # ---- priority ladder ----
         if self.vacation or forced == MODE_VACATION:
             mode, target, reason = MODE_VACATION, vacation_temp, "vacation"
         elif forced == MODE_AWAY:
@@ -283,7 +272,6 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         return self._state(mode, reason, target, tier, occupied, is_night, applied)
 
     async def _apply(self, target):
-        """Write the resolved cooling setpoint to the climate entity."""
         if target is None:
             return None
         ent = self.opt(CONF_CLIMATE_ENTITY)
@@ -291,7 +279,7 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         if state is None:
             _LOGGER.warning("Climado: climate entity %s not found", ent)
             return None
-        if state.state != "cool":  # M1 controls cooling only
+        if state.state != "cool":
             _LOGGER.debug("Climado: %s not in cool mode (%s); skipping", ent, state.state)
             return None
         dmin = float(state.attributes.get("min_temp", DEVICE_COOL_MIN))
@@ -301,15 +289,14 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         value = round(value / step) * step
         current = state.attributes.get("temperature")
         if current is not None and abs(float(current) - value) < (step / 2):
-            return value  # already there; avoid redundant writes
+            return value
         try:
             await self.hass.services.async_call(
-                "climate",
-                "set_temperature",
+                "climate", "set_temperature",
                 {"entity_id": ent, "temperature": value},
                 blocking=False,
             )
-        except Exception as err:  # noqa: BLE001 - never break the engine on a write
+        except Exception as err:  # noqa: BLE001
             _LOGGER.error("Climado: failed to set %s -> %.1f: %s", ent, value, err)
             return None
         _LOGGER.debug("Climado set %s -> %.1f", ent, value)

@@ -5,7 +5,14 @@ from homeassistant.const import Platform
 
 DOMAIN = "climado"
 
-PLATFORMS = [Platform.SELECT, Platform.SENSOR, Platform.BUTTON, Platform.SWITCH]
+PLATFORMS = [
+    Platform.SELECT,
+    Platform.SENSOR,
+    Platform.BUTTON,
+    Platform.SWITCH,
+    Platform.NUMBER,
+    Platform.TIME,
+]
 
 # ---- Config / options keys ----
 CONF_NAME = "name"
@@ -78,3 +85,38 @@ SERVICE_CLEAR_PREARRIVAL = "clear_pre_arrival"
 ATTR_LEAD_MINUTES = "lead_minutes"
 ATTR_TARGET = "target"
 ATTR_ONLY_IF_ABOVE = "only_if_above"
+
+# ---- Tunable config exposed as device entities (entity_category=config) ----
+# (key, name, min, max, step, unit, icon, default)
+NUMBER_TUNABLES = [
+    (CONF_COMFORT_HOME, "Home comfort", 10, 33.5, 0.5, "°C", "mdi:home-thermometer", DEFAULT_COMFORT_HOME),
+    (CONF_AWAY_TEMP, "Away setpoint", 10, 33.5, 0.5, "°C", "mdi:home-export-outline", DEFAULT_AWAY_TEMP),
+    (CONF_VACATION_TEMP, "Vacation setpoint", 10, 33.5, 0.5, "°C", "mdi:bag-suitcase", DEFAULT_VACATION_TEMP),
+    (CONF_BEDROOM_TARGET, "Bedroom night target", 10, 30, 0.5, "°C", "mdi:bed", DEFAULT_BEDROOM_TARGET),
+    (CONF_AWAY_DELAY, "Away delay", 5, 240, 5, "min", "mdi:timer-sand", DEFAULT_AWAY_DELAY),
+    (CONF_NIGHT_CLAMP_MIN, "Night floor", 10, 30, 0.5, "°C", "mdi:thermometer-low", DEFAULT_NIGHT_CLAMP_MIN),
+    (CONF_NIGHT_CLAMP_MAX, "Night ceiling", 10, 33.5, 0.5, "°C", "mdi:thermometer-high", DEFAULT_NIGHT_CLAMP_MAX),
+    (CONF_ONPEAK_COAST, "On-peak coast", 0, 6, 0.5, "°C", "mdi:trending-up", DEFAULT_ONPEAK_COAST),
+    (CONF_PRECOOL_LEAD, "Pre-cool lead", 0, 240, 15, "min", "mdi:snowflake-alert", DEFAULT_PRECOOL_LEAD),
+    (CONF_PRECOOL_DEPTH, "Pre-cool depth", 0, 6, 0.5, "°C", "mdi:snowflake", DEFAULT_PRECOOL_DEPTH),
+    (CONF_PREARRIVAL_LEAD, "Pre-arrival lead", 0, 360, 15, "min", "mdi:home-clock", DEFAULT_PREARRIVAL_LEAD),
+    (CONF_PREARRIVAL_TARGET, "Pre-arrival target", 10, 30, 0.5, "°C", "mdi:home-import-outline", DEFAULT_PREARRIVAL_TARGET),
+    (CONF_PREARRIVAL_ONLY_IF_ABOVE, "Pre-arrival only if above", 10, 40, 0.5, "°C", "mdi:thermometer-alert", DEFAULT_PREARRIVAL_ONLY_IF_ABOVE),
+]
+
+# (key, name, icon, default "HH:MM:SS")
+TIME_TUNABLES = [
+    (CONF_NIGHT_START, "Night start", "mdi:weather-night", DEFAULT_NIGHT_START),
+    (CONF_NIGHT_END, "Night end", "mdi:weather-sunset-up", DEFAULT_NIGHT_END),
+]
+
+# Structural keys edited via the options flow (everything else is a device entity)
+STRUCTURAL_KEYS = [
+    CONF_NAME,
+    CONF_CLIMATE_ENTITY,
+    CONF_MAIN_TEMP_SENSOR,
+    CONF_BEDROOM_TEMP_SENSOR,
+    CONF_PRESENCE_ENTITIES,
+    CONF_OCCUPANCY_ENTITIES,
+    CONF_WORKDAY_SENSOR,
+]

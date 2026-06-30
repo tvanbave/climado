@@ -37,10 +37,16 @@ Manual install: copy `custom_components/climado/` into your HA `config/custom_co
 and restart.
 
 ## Configuration
-All fields are in the Add/Options flow: thermostat, regulating + bedroom temp
-sensors, presence (`device_tracker`/`person`), occupancy/motion (`binary_sensor`),
-workday sensor, the per‑mode setpoints, away delay, night window + clamps, the
-rate knobs (on‑peak coast, pre‑cool lead/depth), and pre‑arrival defaults.
+**Initial setup** (Add Integration) collects the thermostat, temp sensors,
+presence (`device_tracker`/`person`), occupancy/motion (`binary_sensor`), workday
+sensor, plus starting values for all setpoints/timeouts/rate knobs.
+
+**After install**, every scalar setting lives as a **config-category `number`/`time`
+entity on the device** (Settings → Devices → Climado → *Configuration*) — adjust
+setpoints, away delay, night window + clamps, on-peak coast, pre-cool, and
+pre-arrival inline, no dialogs, and use them on dashboards/automations. The
+**options flow** (Configure) is slimmed to the structural entity pickers
+(thermostat / sensors / presence / occupancy / workday).
 
 ### Priority ladder (how the setpoint is chosen)
 `vacation` › `manual away` › `pre‑arrival` › `away` (daytime only) ›
@@ -52,6 +58,7 @@ home comfort. **Away wins over the rate overlay — coast never stacks on a setb
 - `switch.*_climado_control` — master enable. `switch.*_vacation` — vacation hold.
 - `button.*_heading_home_pre_cool`, `button.*_resume_clear_pre_cool`.
 - `sensor.*` — effective mode, control reason, resolved target, rate tier, presence.
+- `number.*` / `time.*` (Configuration category) — all tunables: setpoints, away delay, night window + clamps, on-peak coast, pre-cool, pre-arrival.
 
 ## Services
 - `climado.start_pre_arrival` (`lead_minutes?`, `target?`, `only_if_above?`).

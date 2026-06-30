@@ -110,6 +110,31 @@ def _build_schema(current: dict) -> vol.Schema:
     )
 
 
+def _structural_schema(current: dict) -> vol.Schema:
+    """Options-flow schema: only the structural entity pickers.
+
+    Scalar tunables (setpoints, timeouts, rate knobs, night window) are edited as
+    config-category number/time entities on the device, so they are intentionally
+    omitted here to keep a single source of truth.
+    """
+
+    def dft(key, fallback):
+        value = current.get(key, fallback)
+        return value if value is not None else vol.UNDEFINED
+
+    return vol.Schema(
+        {
+            vol.Required(CONF_NAME, default=dft(CONF_NAME, DEFAULT_NAME)): selector.TextSelector(),
+            vol.Required(CONF_CLIMATE_ENTITY, default=dft(CONF_CLIMATE_ENTITY, None)): _entity("climate"),
+            vol.Required(CONF_MAIN_TEMP_SENSOR, default=dft(CONF_MAIN_TEMP_SENSOR, None)): _entity("sensor", device_class="temperature"),
+            vol.Optional(CONF_BEDROOM_TEMP_SENSOR, default=dft(CONF_BEDROOM_TEMP_SENSOR, None)): _entity("sensor", device_class="temperature"),
+            vol.Optional(CONF_PRESENCE_ENTITIES, default=current.get(CONF_PRESENCE_ENTITIES, [])): _entity(["device_tracker", "person"], multiple=True),
+            vol.Optional(CONF_OCCUPANCY_ENTITIES, default=current.get(CONF_OCCUPANCY_ENTITIES, [])): _entity("binary_sensor", multiple=True),
+            vol.Optional(CONF_WORKDAY_SENSOR, default=dft(CONF_WORKDAY_SENSOR, None)): _entity("binary_sensor"),
+        }
+    )
+
+
 class ClimadoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Initial setup flow."""
 
@@ -140,4 +165,4 @@ class ClimadoOptionsFlow(config_entries.OptionsFlow):
         if user_input is not None:
             return self.async_create_entry(title="", data=user_input)
         current = {**self._entry.data, **self._entry.options}
-        return self.async_show_form(step_id="init", data_schema=_build_schema(current))
+        return self.async_show_form(step_id="init", data_schema=_structural_schema(current))
