@@ -48,6 +48,7 @@ from .const import (
     CONF_RATE_PLAN,
     CONF_VACATION_TEMP,
     CONF_WORKDAY_SENSOR,
+    STRUCTURAL_KEYS,
     DEFAULT_AWAY_DELAY,
     DEFAULT_AWAY_TEMP,
     DEFAULT_BEDROOM_TARGET,
@@ -115,6 +116,15 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         self._night_active: bool = False
         self._night_away_allowed: bool = False
         self._unsub: list = []
+        self._structural = {k: self.opt(k) for k in STRUCTURAL_KEYS}
+
+    def structural_changed(self) -> bool:
+        """True if a structural (entity) option changed since last check."""
+        current = {k: self.opt(k) for k in STRUCTURAL_KEYS}
+        if current != self._structural:
+            self._structural = current
+            return True
+        return False
 
     # ---- config access ----
     @property

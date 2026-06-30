@@ -60,7 +60,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Reload the entry when options change."""
+    """Reload only on structural (entity) changes; refresh for rate-plan saves."""
+    coordinator = hass.data.get(DOMAIN, {}).get(entry.entry_id)
+    if coordinator is not None and not coordinator.structural_changed():
+        await coordinator.async_request_refresh()
+        return
     await hass.config_entries.async_reload(entry.entry_id)
 
 
@@ -108,7 +112,7 @@ def _register_services(hass: HomeAssistant) -> None:
             }
         except (KeyError, TypeError, ValueError) as err:
             raise vol.Invalid(f"invalid rate plan: {err}") from err
-        for coordinator in hass.data.get(DOMAIN, {}).values():
+        for coordinator in list(hass.data.get(DOMAIN, {}).values()):
             entry = coordinator.entry
             hass.config_entries.async_update_entry(
                 entry, options={**entry.options, CONF_RATE_PLAN: norm}
