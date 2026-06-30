@@ -1,0 +1,70 @@
+{
+  "title": "Climado",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Add a Climado zone",
+        "description": "Pick the thermostat and the sensors that drive it. You can change everything later in the integration's options.",
+        "data": {
+          "name": "Zone name",
+          "climate_entity": "Thermostat (climate entity)",
+          "main_temp_sensor": "Regulating temperature sensor",
+          "bedroom_temp_sensor": "Bedroom / second sensor (night tracking)",
+          "presence_entities": "Presence (phones / persons)",
+          "occupancy_entities": "Occupancy / motion sensors",
+          "workday_sensor": "Workday sensor (weekends/holidays)",
+          "comfort_home": "Home comfort setpoint",
+          "away_temp": "Away setpoint",
+          "vacation_temp": "Vacation setpoint",
+          "bedroom_target": "Bedroom night target",
+          "away_delay_minutes": "Away delay",
+          "night_start": "Night start",
+          "night_end": "Night end",
+          "night_clamp_min": "Night setpoint floor",
+          "night_clamp_max": "Night setpoint ceiling",
+          "onpeak_coast_offset": "On-peak coast (warmer by)",
+          "precool_lead_minutes": "Pre-cool lead before on-peak",
+          "precool_depth": "Pre-cool depth (cooler by)",
+          "prearrival_lead_minutes": "Pre-arrival lead",
+          "prearrival_target": "Pre-arrival target",
+          "prearrival_only_if_above": "Pre-arrival only if above"
+        }
+      }
+    },
+    "abort": {
+      "already_configured": "This thermostat already has a Climado zone."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Climado options",
+        "description": "Adjust setpoints, sensors, rate behaviour, and pre-arrival. No YAML required.",
+        "data": {
+          "name": "Zone name",
+          "climate_entity": "Thermostat (climate entity)",
+          "main_temp_sensor": "Regulating temperature sensor",
+          "bedroom_temp_sensor": "Bedroom / second sensor (night tracking)",
+          "presence_entities": "Presence (phones / persons)",
+          "occupancy_entities": "Occupancy / motion sensors",
+          "workday_sensor": "Workday sensor (weekends/holidays)",
+          "comfort_home": "Home comfort setpoint",
+          "away_temp": "Away setpoint",
+          "vacation_temp": "Vacation setpoint",
+          "bedroom_target": "Bedroom night target",
+          "away_delay_minutes": "Away delay",
+          "night_start": "Night start",
+          "night_end": "Night end",
+          "night_clamp_min": "Night setpoint floor",
+          "night_clamp_max": "Night setpoint ceiling",
+          "onpeak_coast_offset": "On-peak coast (warmer by)",
+          "precool_lead_minutes": "Pre-cool lead before on-peak",
+          "precool_depth": "Pre-cool depth (cooler by)",
+          "prearrival_lead_minutes": "Pre-arrival lead",
+          "prearrival_target": "Pre-arrival target",
+          "prearrival_only_if_above": "Pre-arrival only if above"
+        }
+      }
+    }
+  }
+}

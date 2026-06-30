@@ -1,0 +1,38 @@
+start_pre_arrival:
+  name: Start pre-arrival
+  description: >-
+    Begin cooling ahead of arrival ("Early-On"). Overrides Away until you get
+    home or the lead window elapses. Omitted fields fall back to the configured
+    defaults.
+  fields:
+    lead_minutes:
+      name: Lead minutes
+      description: How long to pre-cool before the window expires.
+      selector:
+        number:
+          min: 0
+          max: 720
+          step: 15
+          unit_of_measurement: min
+    target:
+      name: Target temperature
+      description: Cooling setpoint to drive toward during pre-arrival.
+      selector:
+        number:
+          min: 10
+          max: 33.5
+          step: 0.5
+          unit_of_measurement: "°C"
+    only_if_above:
+      name: Only if above
+      description: Skip if the house is at or below this temperature.
+      selector:
+        number:
+          min: 10
+          max: 40
+          step: 0.5
+          unit_of_measurement: "°C"
+
+clear_pre_arrival:
+  name: Clear pre-arrival
+  description: Cancel an active pre-arrival pre-cool and recompute immediately.

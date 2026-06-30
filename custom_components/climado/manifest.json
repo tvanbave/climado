@@ -1,0 +1,13 @@
+{
+  "domain": "climado",
+  "name": "Climado",
+  "codeowners": ["@tvanbave"],
+  "config_flow": true,
+  "dependencies": [],
+  "documentation": "https://github.com/tvanbave/climado",
+  "integration_type": "device",
+  "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/tvanbave/climado/issues",
+  "requirements": [],
+  "version": "0.1.0"
+}

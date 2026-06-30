@@ -1,0 +1,334 @@
+"""Climado engine: presence -> mode -> setpoint resolution -> ecobee command.
+
+A single ``DataUpdateCoordinator`` evaluates the priority ladder on a 15-minute
+tick and on any presence/occupancy state change, then writes the resolved
+cooling setpoint to the underlying climate entity.
+
+Priority ladder (FR3):
+    manual_hold(*) > pre_arrival > vacation > away > night bedroom-tracking
+    > rate-engine overlay (home) > mode default
+
+(*) external/manual holds are not contested in M1 — the engine owns the
+setpoint while enabled.
+"""
+from __future__ import annotations
+
+import logging
+from datetime import datetime, time, timedelta
+
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import Event, HomeAssistant, callback
+from homeassistant.helpers.event import async_track_state_change_event
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+from homeassistant.util import dt as dt_util
+
+from .const import (
+    CONF_AWAY_DELAY,
+    CONF_AWAY_TEMP,
+    CONF_BEDROOM_TARGET,
+    CONF_BEDROOM_TEMP_SENSOR,
+    CONF_CLIMATE_ENTITY,
+    CONF_COMFORT_HOME,
+    CONF_MAIN_TEMP_SENSOR,
+    CONF_NIGHT_CLAMP_MAX,
+    CONF_NIGHT_CLAMP_MIN,
+    CONF_NIGHT_END,
+    CONF_NIGHT_START,
+    CONF_OCCUPANCY_ENTITIES,
+    CONF_ONPEAK_COAST,
+    CONF_PREARRIVAL_LEAD,
+    CONF_PREARRIVAL_ONLY_IF_ABOVE,
+    CONF_PREARRIVAL_TARGET,
+    CONF_PRECOOL_DEPTH,
+    CONF_PRECOOL_LEAD,
+    CONF_PRESENCE_ENTITIES,
+    CONF_VACATION_TEMP,
+    CONF_WORKDAY_SENSOR,
+    DEFAULT_AWAY_DELAY,
+    DEFAULT_AWAY_TEMP,
+    DEFAULT_BEDROOM_TARGET,
+    DEFAULT_COMFORT_HOME,
+    DEFAULT_NIGHT_CLAMP_MAX,
+    DEFAULT_NIGHT_CLAMP_MIN,
+    DEFAULT_NIGHT_END,
+    DEFAULT_NIGHT_START,
+    DEFAULT_ONPEAK_COAST,
+    DEFAULT_PREARRIVAL_LEAD,
+    DEFAULT_PREARRIVAL_ONLY_IF_ABOVE,
+    DEFAULT_PREARRIVAL_TARGET,
+    DEFAULT_PRECOOL_DEPTH,
+    DEFAULT_PRECOOL_LEAD,
+    DEFAULT_VACATION_TEMP,
+    DEVICE_COOL_MAX,
+    DEVICE_COOL_MIN,
+    DOMAIN,
+    MODE_AWAY,
+    MODE_DISABLED,
+    MODE_HOME,
+    MODE_PREARRIVAL,
+    MODE_SLEEP,
+    MODE_VACATION,
+)
+from .rate import default_ulo_plan, rate_offset
+
+_LOGGER = logging.getLogger(__name__)
+
+SCAN_INTERVAL = timedelta(minutes=15)
+_UNAVAILABLE = ("unknown", "unavailable", "", None)
+
+
+def _parse_time(value: str) -> time:
+    parts = [int(p) for p in str(value).split(":")]
+    while len(parts) < 3:
+        parts.append(0)
+    return time(parts[0], parts[1], parts[2])
+
+
+def _in_window(now_t: time, start: time, end: time) -> bool:
+    if start <= end:
+        return start <= now_t < end
+    return now_t >= start or now_t < end  # crosses midnight
+
+
+class ClimadoCoordinator(DataUpdateCoordinator):
+    """Evaluates climate state for one zone."""
+
+    def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
+        super().__init__(
+            hass, _LOGGER, name=f"{DOMAIN}:{entry.title}", update_interval=SCAN_INTERVAL
+        )
+        self.entry = entry
+        # Runtime, user-controllable state (restored by switch/select entities).
+        self.enabled: bool = True
+        self.vacation: bool = False
+        self.manual_mode: str = "auto"
+        self._prearrival_until: datetime | None = None
+        self._prearrival_target: float | None = None
+        self._last_present: datetime = dt_util.utcnow()
+        self._unsub: list = []
+
+    # ---- config access ----
+    @property
+    def options(self) -> dict:
+        return {**self.entry.data, **self.entry.options}
+
+    def opt(self, key, default=None):
+        value = self.options.get(key, default)
+        return default if value is None else value
+
+    # ---- lifecycle ----
+    async def async_setup(self) -> None:
+        watch = list(self.opt(CONF_PRESENCE_ENTITIES, [])) + list(
+            self.opt(CONF_OCCUPANCY_ENTITIES, [])
+        )
+        if watch:
+            self._unsub.append(
+                async_track_state_change_event(
+                    self.hass, watch, self._handle_sensor_event
+                )
+            )
+        await self.async_config_entry_first_refresh()
+
+    async def async_unload(self) -> None:
+        for unsub in self._unsub:
+            unsub()
+        self._unsub.clear()
+
+    @callback
+    def _handle_sensor_event(self, event: Event) -> None:
+        self.hass.async_create_task(self.async_request_refresh())
+
+    # ---- pre-arrival API ----
+    def start_prearrival(
+        self, lead_minutes=None, target=None, only_if_above=None
+    ) -> bool:
+        lead = int(
+            lead_minutes
+            if lead_minutes is not None
+            else self.opt(CONF_PREARRIVAL_LEAD, DEFAULT_PREARRIVAL_LEAD)
+        )
+        tgt = float(
+            target
+            if target is not None
+            else self.opt(CONF_PREARRIVAL_TARGET, DEFAULT_PREARRIVAL_TARGET)
+        )
+        threshold = (
+            only_if_above
+            if only_if_above is not None
+            else self.opt(CONF_PREARRIVAL_ONLY_IF_ABOVE, DEFAULT_PREARRIVAL_ONLY_IF_ABOVE)
+        )
+        if threshold is not None:
+            current = self._get_float(self.opt(CONF_MAIN_TEMP_SENSOR))
+            if current is not None and current <= float(threshold):
+                _LOGGER.info(
+                    "Climado pre-arrival skipped: house %.1f <= threshold %.1f",
+                    current,
+                    float(threshold),
+                )
+                return False
+        self._prearrival_until = dt_util.utcnow() + timedelta(minutes=lead)
+        self._prearrival_target = tgt
+        return True
+
+    def clear_prearrival(self) -> None:
+        self._prearrival_until = None
+        self._prearrival_target = None
+
+    def _prearrival_active(self) -> bool:
+        return (
+            self._prearrival_until is not None
+            and dt_util.utcnow() < self._prearrival_until
+        )
+
+    # ---- helpers ----
+    def _get_float(self, entity_id):
+        if not entity_id:
+            return None
+        state = self.hass.states.get(entity_id)
+        if state is None or state.state in _UNAVAILABLE:
+            return None
+        try:
+            return float(state.state)
+        except (ValueError, TypeError):
+            return None
+
+    def _is_occupied(self) -> bool:
+        for ent in self.opt(CONF_PRESENCE_ENTITIES, []):
+            state = self.hass.states.get(ent)
+            if state and state.state == "home":
+                return True
+        for ent in self.opt(CONF_OCCUPANCY_ENTITIES, []):
+            state = self.hass.states.get(ent)
+            if state and state.state == "on":
+                return True
+        return False
+
+    def _is_workday(self) -> bool:
+        ent = self.opt(CONF_WORKDAY_SENSOR)
+        if ent:
+            state = self.hass.states.get(ent)
+            if state is not None and state.state not in _UNAVAILABLE:
+                return state.state == "on"
+        return dt_util.now().weekday() < 5  # fallback Mon-Fri
+
+    def _away_elapsed(self) -> bool:
+        delay = int(self.opt(CONF_AWAY_DELAY, DEFAULT_AWAY_DELAY))
+        return (dt_util.utcnow() - self._last_present) >= timedelta(minutes=delay)
+
+    def _plan(self):
+        return default_ulo_plan(
+            float(self.opt(CONF_ONPEAK_COAST, DEFAULT_ONPEAK_COAST)),
+            int(self.opt(CONF_PRECOOL_LEAD, DEFAULT_PRECOOL_LEAD)),
+            float(self.opt(CONF_PRECOOL_DEPTH, DEFAULT_PRECOOL_DEPTH)),
+        )
+
+    def _night_target(self, comfort_home: float) -> tuple[float, str]:
+        bed = self._get_float(self.opt(CONF_BEDROOM_TEMP_SENSOR))
+        main = self._get_float(self.opt(CONF_MAIN_TEMP_SENSOR))
+        if bed is None or main is None:
+            return comfort_home, "night/fallback"
+        target = float(self.opt(CONF_BEDROOM_TARGET, DEFAULT_BEDROOM_TARGET)) - bed + main
+        lo = float(self.opt(CONF_NIGHT_CLAMP_MIN, DEFAULT_NIGHT_CLAMP_MIN))
+        hi = float(self.opt(CONF_NIGHT_CLAMP_MAX, DEFAULT_NIGHT_CLAMP_MAX))
+        target = min(hi, max(lo, target))
+        return round(target * 2) / 2, "night/bedroom"
+
+    # ---- core evaluation ----
+    async def _async_update_data(self) -> dict:
+        now = dt_util.now()
+        occupied = self._is_occupied()
+        if occupied:
+            self._last_present = dt_util.utcnow()
+
+        night_start = _parse_time(self.opt(CONF_NIGHT_START, DEFAULT_NIGHT_START))
+        night_end = _parse_time(self.opt(CONF_NIGHT_END, DEFAULT_NIGHT_END))
+        is_night = _in_window(now.time(), night_start, night_end)
+        is_workday = self._is_workday()
+
+        if self._prearrival_active() and occupied:
+            self.clear_prearrival()  # arrived
+
+        if not self.enabled:
+            return self._state(MODE_DISABLED, "disabled", None, None, occupied, is_night)
+
+        comfort_home = float(self.opt(CONF_COMFORT_HOME, DEFAULT_COMFORT_HOME))
+        away_temp = float(self.opt(CONF_AWAY_TEMP, DEFAULT_AWAY_TEMP))
+        vacation_temp = float(self.opt(CONF_VACATION_TEMP, DEFAULT_VACATION_TEMP))
+        forced = self.manual_mode if self.manual_mode in (
+            MODE_HOME,
+            MODE_AWAY,
+            MODE_SLEEP,
+            MODE_VACATION,
+        ) else None
+
+        tier = self._plan().tier_at(now, is_workday).name
+
+        # ---- priority ladder ----
+        if self.vacation or forced == MODE_VACATION:
+            mode, target, reason = MODE_VACATION, vacation_temp, "vacation"
+        elif forced == MODE_AWAY:
+            mode, target, reason = MODE_AWAY, away_temp, "manual_away"
+        elif self._prearrival_active():
+            mode, target, reason = MODE_PREARRIVAL, float(self._prearrival_target), "pre_arrival"
+        elif forced is None and not occupied and not is_night and self._away_elapsed():
+            mode, target, reason = MODE_AWAY, away_temp, "away"
+        elif is_night and forced != MODE_HOME:
+            target, reason = self._night_target(comfort_home)
+            mode = MODE_SLEEP
+        else:
+            offset, rtier = rate_offset(self._plan(), now, is_workday)
+            mode, target, reason = MODE_HOME, comfort_home + offset, f"home/{rtier}"
+
+        applied = await self._apply(target)
+        return self._state(mode, reason, target, tier, occupied, is_night, applied)
+
+    async def _apply(self, target):
+        """Write the resolved cooling setpoint to the climate entity."""
+        if target is None:
+            return None
+        ent = self.opt(CONF_CLIMATE_ENTITY)
+        state = self.hass.states.get(ent)
+        if state is None:
+            _LOGGER.warning("Climado: climate entity %s not found", ent)
+            return None
+        if state.state != "cool":  # M1 controls cooling only
+            _LOGGER.debug("Climado: %s not in cool mode (%s); skipping", ent, state.state)
+            return None
+        dmin = float(state.attributes.get("min_temp", DEVICE_COOL_MIN))
+        dmax = float(state.attributes.get("max_temp", DEVICE_COOL_MAX))
+        step = float(state.attributes.get("target_temp_step", 0.5) or 0.5)
+        value = min(dmax, max(dmin, float(target)))
+        value = round(value / step) * step
+        current = state.attributes.get("temperature")
+        if current is not None and abs(float(current) - value) < (step / 2):
+            return value  # already there; avoid redundant writes
+        try:
+            await self.hass.services.async_call(
+                "climate",
+                "set_temperature",
+                {"entity_id": ent, "temperature": value},
+                blocking=False,
+            )
+        except Exception as err:  # noqa: BLE001 - never break the engine on a write
+            _LOGGER.error("Climado: failed to set %s -> %.1f: %s", ent, value, err)
+            return None
+        _LOGGER.debug("Climado set %s -> %.1f", ent, value)
+        return value
+
+    def _state(self, mode, reason, target, tier, occupied, is_night, applied=None) -> dict:
+        return {
+            "mode": mode,
+            "reason": reason,
+            "target": target,
+            "applied": applied,
+            "tier": tier,
+            "occupied": occupied,
+            "is_night": is_night,
+            "vacation": self.vacation,
+            "enabled": self.enabled,
+            "manual_mode": self.manual_mode,
+            "prearrival_active": self._prearrival_active(),
+            "prearrival_until": self._prearrival_until.isoformat()
+            if self._prearrival_until
+            else None,
+        }
