@@ -284,26 +284,33 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         tier = plan.tier_at(now, is_workday).name
 
         if self.vacation or forced == MODE_VACATION:
-            mode, target, reason = MODE_VACATION, vacation_temp, "vacation"
+            mode, action, reason = MODE_VACATION, ("temp", vacation_temp), "vacation"
         elif forced == MODE_AWAY:
-            mode, target, reason = MODE_AWAY, away_temp, "manual_away"
+            mode, action, reason = MODE_AWAY, ("temp", away_temp), "manual_away"
         elif self._prearrival_active():
-            mode, target, reason = MODE_PREARRIVAL, float(self._prearrival_target), "pre_arrival"
+            mode, action, reason = MODE_PREARRIVAL, ("temp", float(self._prearrival_target)), "pre_arrival"
         elif (
             forced is None
             and not occupied
             and self._away_elapsed()
             and (not is_night or self._night_away_allowed)
         ):
-            mode, target, reason = MODE_AWAY, away_temp, "away"
+            mode, action, reason = MODE_AWAY, ("temp", away_temp), "away"
         elif is_night and forced != MODE_HOME:
-            target, reason = self._night_target(comfort_home)
-            mode = MODE_SLEEP
+            # Hand overnight to the ecobee's native Sleep comfort (Bedroom sensor):
+            # a true closed loop on the bedroom that reaches target and cycles off,
+            # which outperforms a computed main-floor hold for a hot 2nd-floor room.
+            mode, action, reason = MODE_SLEEP, ("preset", "sleep"), "night/ecobee-sleep"
         else:
             offset, rtier = rate_offset(plan, now, is_workday)
-            mode, target, reason = MODE_HOME, comfort_home + offset, f"home/{rtier}"
+            mode, action, reason = MODE_HOME, ("temp", comfort_home + offset), f"home/{rtier}"
 
-        applied = await self._apply(target)
+        if action[0] == "preset":
+            applied = await self._apply_preset(action[1])
+            target = applied
+        else:
+            target = action[1]
+            applied = await self._apply(target)
         return self._state(
             mode, reason, target, tier, occupied, is_night, applied, plan_to_dict(plan)
         )
@@ -338,6 +345,35 @@ class ClimadoCoordinator(DataUpdateCoordinator):
             return None
         _LOGGER.debug("Climado set %s -> %.1f", ent, value)
         return value
+
+    async def _apply_preset(self, preset):
+        """Hand control to an ecobee comfort setting (Sleep -> Bedroom sensor).
+
+        The ecobee then runs its own closed loop on that comfort's assigned
+        sensor and cycles off when satisfied. Idempotent: skips if already active.
+        """
+        ent = self.opt(CONF_CLIMATE_ENTITY)
+        state = self.hass.states.get(ent)
+        if state is None:
+            _LOGGER.warning("Climado: climate entity %s not found", ent)
+            return None
+        if state.state != "cool":
+            _LOGGER.debug("Climado: %s not in cool mode (%s); skipping", ent, state.state)
+            return None
+        if state.attributes.get("preset_mode") == preset:
+            return state.attributes.get("temperature")  # already active; avoid churn
+        try:
+            await self.hass.services.async_call(
+                "climate",
+                "set_preset_mode",
+                {"entity_id": ent, "preset_mode": preset},
+                blocking=False,
+            )
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.error("Climado: failed to set %s preset -> %s: %s", ent, preset, err)
+            return None
+        _LOGGER.debug("Climado set %s preset -> %s", ent, preset)
+        return state.attributes.get("temperature")
 
     def _state(self, mode, reason, target, tier, occupied, is_night, applied=None, rate_plan=None) -> dict:
         return {
