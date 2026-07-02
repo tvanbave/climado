@@ -115,6 +115,7 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         self._last_present: datetime = dt_util.utcnow()
         self._night_active: bool = False
         self._night_away_allowed: bool = False
+        self._released: bool = True  # True once we've handed control back after a disable
         self._unsub: list = []
         self._structural = {k: self.opt(k) for k in STRUCTURAL_KEYS}
 
@@ -271,7 +272,14 @@ class ClimadoCoordinator(DataUpdateCoordinator):
             self.clear_prearrival()
 
         if not self.enabled:
+            # Hand the thermostat cleanly back to its native schedule (once per
+            # disable): otherwise our last hold persists ("until you change it")
+            # and silently blocks the ecobee's own comfort schedule.
+            if not self._released:
+                self._released = True
+                await self._release_control()
             return self._state(MODE_DISABLED, "disabled", None, None, occupied, is_night)
+        self._released = False
 
         comfort_home = float(self.tune(CONF_COMFORT_HOME, DEFAULT_COMFORT_HOME))
         away_temp = float(self.tune(CONF_AWAY_TEMP, DEFAULT_AWAY_TEMP))
@@ -345,6 +353,26 @@ class ClimadoCoordinator(DataUpdateCoordinator):
             return None
         _LOGGER.debug("Climado set %s -> %.1f", ent, value)
         return value
+
+    async def _release_control(self):
+        """Cancel our hold so the thermostat's native schedule resumes."""
+        ent = self.opt(CONF_CLIMATE_ENTITY)
+        if self.hass.services.has_service("ecobee", "resume_program"):
+            try:
+                await self.hass.services.async_call(
+                    "ecobee",
+                    "resume_program",
+                    {"entity_id": ent, "resume_all": True},
+                    blocking=False,
+                )
+                _LOGGER.info("Climado disabled: resumed %s native program", ent)
+                return
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.error("Climado: failed to resume program on %s: %s", ent, err)
+        else:
+            _LOGGER.info(
+                "Climado disabled: no resume service for %s; last hold remains", ent
+            )
 
     async def _apply_preset(self, preset):
         """Hand control to an ecobee comfort setting (Sleep -> Bedroom sensor).
