@@ -43,7 +43,8 @@ class ClimadoPreArrivalButton(_BaseButton):
         super().__init__(coordinator, entry, "prearrival")
 
     async def async_press(self) -> None:
-        self.coordinator.start_prearrival()
+        # Explicit user intent: always engage, ignoring the only-if-above guard.
+        self.coordinator.start_prearrival(force=True)
         await self.coordinator.async_request_refresh()
 
 

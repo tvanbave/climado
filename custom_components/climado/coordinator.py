@@ -167,11 +167,13 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         self.hass.async_create_task(self.async_request_refresh())
 
     # ---- pre-arrival API ----
-    def start_prearrival(self, lead_minutes=None, target=None, only_if_above=None) -> bool:
+    def start_prearrival(self, lead_minutes=None, target=None, only_if_above=None, force=False) -> bool:
         lead = int(lead_minutes if lead_minutes is not None else self.tune(CONF_PREARRIVAL_LEAD, DEFAULT_PREARRIVAL_LEAD))
         tgt = float(target if target is not None else self.tune(CONF_PREARRIVAL_TARGET, DEFAULT_PREARRIVAL_TARGET))
         threshold = only_if_above if only_if_above is not None else self.tune(CONF_PREARRIVAL_ONLY_IF_ABOVE, DEFAULT_PREARRIVAL_ONLY_IF_ABOVE)
-        if threshold is not None:
+        # `force` = explicit user intent (the physical button): never skip on the
+        # only-if-above guard. The guard is for conditional/service callers.
+        if not force and threshold is not None:
             current = self._get_float(self.opt(CONF_MAIN_TEMP_SENSOR))
             if current is not None and current <= float(threshold):
                 _LOGGER.info("Climado pre-arrival skipped: house %.1f <= %.1f", current, float(threshold))
