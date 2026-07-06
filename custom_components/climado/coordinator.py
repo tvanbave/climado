@@ -65,6 +65,7 @@ from .const import (
     MODE_AWAY,
     MODE_DISABLED,
     MODE_HOME,
+    MODE_MANUAL_HOLD,
     MODE_PREARRIVAL,
     MODE_SLEEP,
     MODE_VACATION,
@@ -75,6 +76,9 @@ _LOGGER = logging.getLogger(__name__)
 
 SCAN_INTERVAL = timedelta(minutes=15)
 _UNAVAILABLE = ("unknown", "unavailable", "", None)
+# Grace after our own write before external-change detection re-arms — covers
+# the ecobee integration's polling lag (state can trail a command by ~3 min).
+_MANUAL_GRACE = timedelta(minutes=5)
 
 
 def _parse_time(value) -> time:
@@ -111,6 +115,12 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         self._night_active: bool = False
         self._night_away_allowed: bool = False
         self._released: bool = True  # True once we've handed control back after a disable
+        # Manual-hold respect: what we last commanded vs. what the thermostat
+        # reports; a mismatch (outside the grace window) means a hand adjustment.
+        self._last_commanded: tuple | None = None
+        self._commanded_at: datetime | None = None
+        self._manual_hold: tuple | None = None
+        self._manual_hold_until: datetime | None = None
         self._unsub: list = []
         self._structural = {k: self.opt(k) for k in STRUCTURAL_KEYS}
 
@@ -225,6 +235,57 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         delay = int(self.tune(CONF_AWAY_DELAY, DEFAULT_AWAY_DELAY))
         return (dt_util.utcnow() - self._last_present) >= timedelta(minutes=delay)
 
+    # ---- manual-hold respect ----
+    def clear_manual_hold(self) -> None:
+        """Drop any respected manual hold (explicit user action supersedes it)."""
+        self._manual_hold = None
+        self._manual_hold_until = None
+
+    def _thermostat_actual(self) -> tuple | None:
+        """The thermostat's current commanded state as ("preset", p) / ("temp", t)."""
+        state = self.hass.states.get(self.opt(CONF_CLIMATE_ENTITY))
+        if state is None or state.state in _UNAVAILABLE:
+            return None
+        preset = state.attributes.get("preset_mode")
+        if preset and preset != "temp":
+            return ("preset", preset)
+        temp = state.attributes.get("temperature")
+        try:
+            return ("temp", float(temp)) if temp is not None else None
+        except (ValueError, TypeError):
+            return None
+
+    def _matches_command(self, actual: tuple | None) -> bool:
+        cmd = self._last_commanded
+        if cmd is None or actual is None:
+            return True  # nothing to compare against
+        if cmd[0] != actual[0]:
+            return False
+        if cmd[0] == "preset":
+            return cmd[1] == actual[1]
+        return abs(float(cmd[1]) - float(actual[1])) < 0.3
+
+    def _next_boundary(self, now: datetime, night_start: time, night_end: time) -> datetime:
+        """Next night-window edge after ``now`` (the 'next transition' a hold lasts to)."""
+        candidates = []
+        for t in (night_start, night_end):
+            local = now.replace(hour=t.hour, minute=t.minute, second=t.second, microsecond=0)
+            if local <= now:
+                local += timedelta(days=1)
+            candidates.append(local)
+        return dt_util.as_utc(min(candidates))
+
+    def _record_command(self, command: tuple, wrote: bool) -> None:
+        self._last_commanded = command
+        if wrote:
+            self._commanded_at = dt_util.utcnow()
+            # Only branches that outrank a manual hold can write while one is
+            # active (away/vacation/pre-arrival/forced). Once the engine has
+            # overwritten the thermostat, the hand adjustment is moot — drop it
+            # so control resumes normally afterwards (e.g. returning home after
+            # Away shouldn't leave the house pinned at the away setpoint).
+            self.clear_manual_hold()
+
     def _plan(self):
         coast = float(self.tune(CONF_ONPEAK_COAST, DEFAULT_ONPEAK_COAST))
         lead = int(self.tune(CONF_PRECOOL_LEAD, DEFAULT_PRECOOL_LEAD))
@@ -269,6 +330,8 @@ class ClimadoCoordinator(DataUpdateCoordinator):
             # and silently blocks the ecobee's own comfort schedule.
             if not self._released:
                 self._released = True
+                self.clear_manual_hold()
+                self._last_commanded = None  # fresh baseline when re-enabled
                 await self._release_control()
             return self._state(MODE_DISABLED, "disabled", None, None, occupied, is_night)
         self._released = False
@@ -279,6 +342,34 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         forced = self.manual_mode if self.manual_mode in (
             MODE_HOME, MODE_AWAY, MODE_SLEEP, MODE_VACATION
         ) else None
+
+        # Manual-hold respect (auto mode only): a hand adjustment on the
+        # thermostat is honored until the next night-window transition, like
+        # ecobee's "hold until next transition". Explicit select choices,
+        # Resume, vacation/away/pre-arrival all supersede it.
+        actual = self._thermostat_actual()
+        if self._manual_hold_until and dt_util.utcnow() >= self._manual_hold_until:
+            self.clear_manual_hold()
+        if forced is None and not self.vacation:
+            grace_over = self._last_commanded is not None and (
+                self._commanded_at is None
+                or dt_util.utcnow() - self._commanded_at > _MANUAL_GRACE
+            )
+            if (
+                self._manual_hold_until is None
+                and grace_over
+                and actual is not None
+                and not self._matches_command(actual)
+            ):
+                self._manual_hold = actual
+                self._manual_hold_until = self._next_boundary(now, night_start, night_end)
+                _LOGGER.info(
+                    "Climado: manual adjustment detected (%s); respecting until %s",
+                    actual,
+                    self._manual_hold_until,
+                )
+            elif self._manual_hold_until is not None and actual is not None:
+                self._manual_hold = actual  # user re-adjusted during the hold
 
         plan = self._plan()
         tier = plan.tier_at(now, is_workday)
@@ -296,6 +387,9 @@ class ClimadoCoordinator(DataUpdateCoordinator):
             and (not is_night or self._night_away_allowed)
         ):
             mode, action, reason = MODE_AWAY, ("temp", away_temp), "away"
+        elif forced is None and self._manual_hold_until is not None:
+            # Respect the hand adjustment: no writes until the next transition.
+            mode, action, reason = MODE_MANUAL_HOLD, ("none", None), "manual_hold"
         elif forced == MODE_SLEEP or (is_night and forced != MODE_HOME):
             # Hand control to the ecobee's native Sleep comfort (Bedroom sensor):
             # a true closed loop on the bedroom that reaches target and cycles off,
@@ -310,6 +404,10 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         if action[0] == "preset":
             applied = await self._apply_preset(action[1])
             target = applied
+        elif action[0] == "none":
+            # Manual hold: report the user's value, write nothing.
+            target = self._manual_hold[1] if self._manual_hold and self._manual_hold[0] == "temp" else None
+            applied = None
         else:
             target = action[1]
             applied = await self._apply(target)
@@ -335,6 +433,7 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         value = round(value / step) * step
         current = state.attributes.get("temperature")
         if current is not None and abs(float(current) - value) < (step / 2):
+            self._record_command(("temp", value), wrote=False)
             return value
         try:
             await self.hass.services.async_call(
@@ -345,6 +444,7 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         except Exception as err:  # noqa: BLE001
             _LOGGER.error("Climado: failed to set %s -> %.1f: %s", ent, value, err)
             return None
+        self._record_command(("temp", value), wrote=True)
         _LOGGER.debug("Climado set %s -> %.1f", ent, value)
         return value
 
@@ -383,6 +483,7 @@ class ClimadoCoordinator(DataUpdateCoordinator):
             _LOGGER.debug("Climado: %s not in cool mode (%s); skipping", ent, state.state)
             return None
         if state.attributes.get("preset_mode") == preset:
+            self._record_command(("preset", preset), wrote=False)
             return state.attributes.get("temperature")  # already active; avoid churn
         try:
             await self.hass.services.async_call(
@@ -394,6 +495,7 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         except Exception as err:  # noqa: BLE001
             _LOGGER.error("Climado: failed to set %s preset -> %s: %s", ent, preset, err)
             return None
+        self._record_command(("preset", preset), wrote=True)
         _LOGGER.debug("Climado set %s preset -> %s", ent, preset)
         return state.attributes.get("temperature")
 
@@ -416,4 +518,9 @@ class ClimadoCoordinator(DataUpdateCoordinator):
             "prearrival_until": self._prearrival_until.isoformat()
             if self._prearrival_until
             else None,
+            "manual_hold_active": self._manual_hold_until is not None,
+            "manual_hold_until": self._manual_hold_until.isoformat()
+            if self._manual_hold_until
+            else None,
+            "manual_hold_value": list(self._manual_hold) if self._manual_hold else None,
         }

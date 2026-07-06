@@ -225,12 +225,15 @@ class ClimadoCard extends LitElement {
     const enableOn = this._state(e.enable)?.state === "on";
     const vacOn = this._state(e.vacation)?.state === "on";
     const preUntil = this._attr(e.effective_mode, "prearrival_until");
+    const holdUntil = this._attr(e.effective_mode, "manual_hold_active")
+      ? this._attr(e.effective_mode, "manual_hold_until")
+      : null;
 
     return html`
       <ha-card>
         <div class="head">
           <div>
-            <div class="mode">${eff}</div>
+            <div class="mode">${eff.replace(/_/g, " ")}</div>
             <div class="reason">${reason}</div>
           </div>
           <div class="temps">
@@ -246,6 +249,9 @@ class ClimadoCard extends LitElement {
           <span class="chip ${presence === "occupied" ? "ok" : "warn"}">${presence}</span>
           ${preUntil
             ? html`<span class="chip pre">pre-cooling until ${this._fmt(preUntil)}</span>`
+            : ""}
+          ${holdUntil
+            ? html`<span class="chip hold">manual hold until ${this._fmt(holdUntil)}</span>`
             : ""}
         </div>
 
@@ -391,6 +397,9 @@ class ClimadoCard extends LitElement {
       }
       .chip.pre {
         background: #1565c0;
+      }
+      .chip.hold {
+        background: #6a1b9a;
       }
       .modes {
         display: grid;
@@ -550,4 +559,4 @@ window.customCards.push({
   documentation: "https://github.com/tvanbave/climado",
 });
 
-console.info("%c CLIMADO-CARD %c 0.3.5 ", "background:#1565c0;color:#fff", "");
+console.info("%c CLIMADO-CARD %c 0.3.6 ", "background:#1565c0;color:#fff", "");

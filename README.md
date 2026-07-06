@@ -57,8 +57,16 @@ pre-arrival inline, no dialogs, and use them on dashboards/automations. The
 
 ### Priority ladder (how the setpoint is chosen)
 `vacation` › `manual away` › `pre‑arrival` › `away` (daytime, or overnight only if the house was already empty at the night boundary) ›
+`manual hold` (a hand adjustment on the thermostat is respected — no writes — until the next night‑window transition) ›
 `night → ecobee Sleep comfort` (in the night window, or forced via the mode select) › `home + rate offset` ›
 home comfort. **Away wins over the rate overlay — coast never stacks on a setback.**
+
+### Manual adjustments
+If someone changes the thermostat by hand (dial, ecobee app, or HA thermostat
+card), Climado detects it and **respects it until the next night‑window edge**
+(like ecobee's "hold until next transition"), then resumes control. Picking a
+mode in the select, pressing **Resume**, or vacation/away/pre‑arrival supersede
+the hold. Detection only arms in `auto` mode.
 
 ## Entities created
 - `select.*_mode` — manual override (`auto`/`home`/`away`/`sleep`/`vacation`).

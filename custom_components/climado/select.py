@@ -40,6 +40,8 @@ class ClimadoModeSelect(CoordinatorEntity, SelectEntity, RestoreEntity):
 
     async def async_select_option(self, option: str) -> None:
         self.coordinator.manual_mode = option
+        # An explicit mode choice supersedes a respected hand adjustment.
+        self.coordinator.clear_manual_hold()
         await self.coordinator.async_request_refresh()
         self.async_write_ha_state()
 

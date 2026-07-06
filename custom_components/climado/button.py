@@ -49,9 +49,9 @@ class ClimadoPreArrivalButton(_BaseButton):
 
 
 class ClimadoClearButton(_BaseButton):
-    """Cancel pre-arrival and recompute now."""
+    """Cancel pre-arrival and any respected manual hold, then recompute now."""
 
-    _attr_name = "Resume (clear pre-cool)"
+    _attr_name = "Resume (clear overrides)"
     _attr_icon = "mdi:restart"
 
     def __init__(self, coordinator: ClimadoCoordinator, entry: ConfigEntry) -> None:
@@ -59,4 +59,5 @@ class ClimadoClearButton(_BaseButton):
 
     async def async_press(self) -> None:
         self.coordinator.clear_prearrival()
+        self.coordinator.clear_manual_hold()
         await self.coordinator.async_request_refresh()
