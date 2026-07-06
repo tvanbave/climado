@@ -18,14 +18,11 @@ from homeassistant.helpers import selector
 from .const import (
     CONF_AWAY_DELAY,
     CONF_AWAY_TEMP,
-    CONF_BEDROOM_TARGET,
     CONF_BEDROOM_TEMP_SENSOR,
     CONF_CLIMATE_ENTITY,
     CONF_COMFORT_HOME,
     CONF_MAIN_TEMP_SENSOR,
     CONF_NAME,
-    CONF_NIGHT_CLAMP_MAX,
-    CONF_NIGHT_CLAMP_MIN,
     CONF_NIGHT_END,
     CONF_NIGHT_START,
     CONF_OCCUPANCY_ENTITIES,
@@ -40,11 +37,8 @@ from .const import (
     CONF_WORKDAY_SENSOR,
     DEFAULT_AWAY_DELAY,
     DEFAULT_AWAY_TEMP,
-    DEFAULT_BEDROOM_TARGET,
     DEFAULT_COMFORT_HOME,
     DEFAULT_NAME,
-    DEFAULT_NIGHT_CLAMP_MAX,
-    DEFAULT_NIGHT_CLAMP_MIN,
     DEFAULT_NIGHT_END,
     DEFAULT_NIGHT_START,
     DEFAULT_ONPEAK_COAST,
@@ -55,6 +49,7 @@ from .const import (
     DEFAULT_PRECOOL_LEAD,
     DEFAULT_VACATION_TEMP,
     DOMAIN,
+    STRUCTURAL_KEYS,
 )
 
 
@@ -94,12 +89,9 @@ def _build_schema(current: dict) -> vol.Schema:
             vol.Optional(CONF_COMFORT_HOME, default=dft(CONF_COMFORT_HOME, DEFAULT_COMFORT_HOME)): _num(10, 33.5, 0.5, "°C"),
             vol.Optional(CONF_AWAY_TEMP, default=dft(CONF_AWAY_TEMP, DEFAULT_AWAY_TEMP)): _num(10, 33.5, 0.5, "°C"),
             vol.Optional(CONF_VACATION_TEMP, default=dft(CONF_VACATION_TEMP, DEFAULT_VACATION_TEMP)): _num(10, 33.5, 0.5, "°C"),
-            vol.Optional(CONF_BEDROOM_TARGET, default=dft(CONF_BEDROOM_TARGET, DEFAULT_BEDROOM_TARGET)): _num(10, 30, 0.5, "°C"),
             vol.Optional(CONF_AWAY_DELAY, default=dft(CONF_AWAY_DELAY, DEFAULT_AWAY_DELAY)): _num(5, 240, 5, "min"),
             vol.Optional(CONF_NIGHT_START, default=dft(CONF_NIGHT_START, DEFAULT_NIGHT_START)): selector.TimeSelector(),
             vol.Optional(CONF_NIGHT_END, default=dft(CONF_NIGHT_END, DEFAULT_NIGHT_END)): selector.TimeSelector(),
-            vol.Optional(CONF_NIGHT_CLAMP_MIN, default=dft(CONF_NIGHT_CLAMP_MIN, DEFAULT_NIGHT_CLAMP_MIN)): _num(10, 30, 0.5, "°C"),
-            vol.Optional(CONF_NIGHT_CLAMP_MAX, default=dft(CONF_NIGHT_CLAMP_MAX, DEFAULT_NIGHT_CLAMP_MAX)): _num(10, 33.5, 0.5, "°C"),
             vol.Optional(CONF_ONPEAK_COAST, default=dft(CONF_ONPEAK_COAST, DEFAULT_ONPEAK_COAST)): _num(0, 6, 0.5, "°C"),
             vol.Optional(CONF_PRECOOL_LEAD, default=dft(CONF_PRECOOL_LEAD, DEFAULT_PRECOOL_LEAD)): _num(0, 240, 15, "min"),
             vol.Optional(CONF_PRECOOL_DEPTH, default=dft(CONF_PRECOOL_DEPTH, DEFAULT_PRECOOL_DEPTH)): _num(0, 6, 0.5, "°C"),
@@ -163,6 +155,14 @@ class ClimadoOptionsFlow(config_entries.OptionsFlow):
 
     async def async_step_init(self, user_input: dict | None = None):
         if user_input is not None:
-            return self.async_create_entry(title="", data=user_input)
+            # Preserve non-form option keys (e.g. the saved rate plan) — replacing
+            # options wholesale with just the structural fields would silently
+            # wipe a custom schedule saved via climado.set_rate_plan.
+            preserved = {
+                k: v
+                for k, v in self._entry.options.items()
+                if k not in STRUCTURAL_KEYS
+            }
+            return self.async_create_entry(title="", data={**preserved, **user_input})
         current = {**self._entry.data, **self._entry.options}
         return self.async_show_form(step_id="init", data_schema=_structural_schema(current))

@@ -13,9 +13,9 @@
  *   # climate: climate.main_floor             # to show current room temp
  *   # rate_plan: { weekday: [[0,7,"ultra_low"],...], weekend: [...] }
  *
- * Status: control surface (mode / enable / vacation / pre-arrival) is functional
- * against the M1 backend. Rate-grid editing calls climado.set_rate_plan, which
- * arrives with the M2 backend; until then Save shows a notice.
+ * Status: fully functional against the v0.3+ backend. The card ships inside the
+ * integration and is served + auto-registered at /climado_static/climado-card.js;
+ * rate-grid Save persists via the climado.set_rate_plan service.
  */
 import {
   LitElement,
@@ -199,7 +199,7 @@ class ClimadoCard extends LitElement {
       this._notify("Climado: rate plan saved");
     } catch (err) {
       this._notify(
-        "Climado: saving the rate plan needs the M2 backend (climado.set_rate_plan). Plan not persisted yet."
+        `Climado: failed to save rate plan${err?.message ? ` — ${err.message}` : ""} (see Home Assistant logs).`
       );
     }
   }
@@ -240,7 +240,7 @@ class ClimadoCard extends LitElement {
         </div>
 
         <div class="chips">
-          <span class="chip" style="--c:${TIERS[this._tierId(tier)]?.color || "#999"}">
+          <span class="chip" style="--c:${TIERS[this._tierId(e, tier)]?.color || "#999"}">
             ${tier || "tier"}
           </span>
           <span class="chip ${presence === "occupied" ? "ok" : "warn"}">${presence}</span>
@@ -298,8 +298,12 @@ class ClimadoCard extends LitElement {
     `;
   }
 
-  _tierId(name) {
-    const hit = Object.entries(TIERS).find(([, t]) => t.name === name);
+  _tierId(e, name) {
+    // Prefer the backend's canonical tier_id (v0.3.5+); fall back to matching
+    // the display-name prefix ("Ultra-low overnight" -> "Ultra-low").
+    const id = this._state(e.tier)?.attributes?.tier_id;
+    if (id && TIERS[id]) return id;
+    const hit = Object.entries(TIERS).find(([, t]) => name && name.startsWith(t.name));
     return hit ? hit[0] : name;
   }
 
@@ -546,4 +550,4 @@ window.customCards.push({
   documentation: "https://github.com/tvanbave/climado",
 });
 
-console.info("%c CLIMADO-CARD %c 0.3.0 ", "background:#1565c0;color:#fff", "");
+console.info("%c CLIMADO-CARD %c 0.3.5 ", "background:#1565c0;color:#fff", "");

@@ -3,11 +3,11 @@
   "name": "Climado",
   "codeowners": ["@tvanbave"],
   "config_flow": true,
-  "dependencies": [],
+  "dependencies": ["frontend", "http"],
   "documentation": "https://github.com/tvanbave/climado",
   "integration_type": "device",
   "iot_class": "local_polling",
   "issue_tracker": "https://github.com/tvanbave/climado/issues",
   "requirements": [],
-  "version": "0.3.4"
+  "version": "0.3.5"
 }

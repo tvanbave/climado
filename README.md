@@ -4,27 +4,34 @@ Presence‑aware, rate‑aware climate control for Home Assistant — an Alarmo�
 custom integration that mimics how Nest/ecobee handle Home/Away and temperature
 setting, with everything configurable from the UI (no YAML).
 
-> **Status: M1 (MVP backend).** Single zone, cooling season, configured via the
-> integration's options + standard entity cards. The bespoke Lovelace panel and
-> the fully editable multi‑tier rate grid are later milestones (M2/M3).
+> **Status: single zone, cooling season.** Backend + editable rate plan + shipped
+> Lovelace card are done (M1/M2). The bespoke sidebar panel (M3) and multi‑zone /
+> heating (M4) are future milestones.
 
 ## What it does
 - **Home/Away/Sleep/Vacation** state machine driven by your chosen presence and
-  occupancy sensors, with an auto‑away delay and a night away‑disable window.
+  occupancy sensors, with an auto‑away delay and a night away‑latch (away is only
+  allowed overnight if the house was already empty at the night boundary).
 - **Configurable TOU/ULO rate engine** — pre‑cool before the expensive period and
-  coast through it. M1 ships the **Ontario ULO** layout with tunable on‑peak
-  coast and pre‑cool lead/depth.
-- **Night bedroom tracking** — drives the *bedroom* to its target even though the
-  thermostat measures the main floor, via `target = bedroom_target − (bedroom − main_floor)`.
+  coast through it. Ships the **Ontario ULO** layout; the weekly schedule is
+  editable from the card, and on‑peak coast / pre‑cool are tunable.
+- **Native night handoff** — at the night window start, Climado activates the
+  ecobee's own **Sleep comfort setting** (a true closed loop on your bedroom
+  sensor that reaches target and cycles off). The overnight temperature is the
+  ecobee Sleep comfort's setpoint — edit it in the ecobee app.
 - **Manual pre‑arrival ("Heading home")** — a button/service that pre‑cools ahead
-  of arrival, optionally only if the house has drifted warm; auto‑expires on
-  arrival.
+  of arrival; the button always engages, the service can be made conditional on
+  the house having drifted warm. Auto‑expires on arrival.
 - **Alarmo‑style entity pickers** — thermostat, sensors and phones are all chosen
   from filtered lists; no entity IDs are hardcoded.
 
 ## Requirements
 - An ecobee (or compatible single‑setpoint cooling) `climate` entity.
 - **ecobee Hold Duration set to "Until you change it"** so HA holds persist.
+- The ecobee **Sleep comfort setting** assigned to your bedroom sensor (verify:
+  during Sleep, the thermostat's displayed temperature should track the bedroom
+  reading — if it shows the main‑floor value, remove + re‑add the sensor in the
+  ecobee app's Sleep comfort).
 - A `binary_sensor` workday sensor (optional) for weekend/holiday rate handling.
 
 ## Install (HACS custom repository)
@@ -50,7 +57,7 @@ pre-arrival inline, no dialogs, and use them on dashboards/automations. The
 
 ### Priority ladder (how the setpoint is chosen)
 `vacation` › `manual away` › `pre‑arrival` › `away` (daytime, or overnight only if the house was already empty at the night boundary) ›
-`night bedroom‑tracking` (in the night window) › `home + rate offset` ›
+`night → ecobee Sleep comfort` (in the night window, or forced via the mode select) › `home + rate offset` ›
 home comfort. **Away wins over the rate overlay — coast never stacks on a setback.**
 
 ## Entities created
@@ -58,17 +65,16 @@ home comfort. **Away wins over the rate overlay — coast never stacks on a setb
 - `switch.*_climado_control` — master enable. `switch.*_vacation` — vacation hold.
 - `button.*_heading_home_pre_cool`, `button.*_resume_clear_pre_cool`.
 - `sensor.*` — effective mode, control reason, resolved target, rate tier, presence.
-- `number.*` / `time.*` (Configuration category) — all tunables: setpoints, away delay, night window + clamps, on-peak coast, pre-cool, pre-arrival.
+- `number.*` / `time.*` (Configuration category) — tunables: setpoints, away delay, night window, on-peak coast, pre-cool, pre-arrival. (The overnight temperature is *not* here — it's the ecobee Sleep comfort's setpoint.)
 
 ## Services
-- `climado.start_pre_arrival` (`lead_minutes?`, `target?`, `only_if_above?`).
+- `climado.start_pre_arrival` (`lead_minutes?`, `target?`, `only_if_above?`, `force?`).
 - `climado.clear_pre_arrival`.
-- `climado.set_rate_plan` (`plan`: `{weekday, weekend}` of `[start, end, tier]` blocks).
+- `climado.set_rate_plan` (`plan`: `{weekday, weekend}` of `[start, end, tier]` blocks; must cover 00–24 with no gaps/overlaps).
 
-## Defaults (parity with the prior `ulo_climate_controller` automation)
-Home 23.5 · Away 28 · Bedroom target 23 · Away delay 45 min · Night 23:00–07:00 ·
-Night clamp 19–25 · On‑peak coast +2.0 · Pre‑cool lead 90 min / depth 2.0 →
-reproduces the 21.5 pre‑cool / 25.5 on‑peak behaviour.
+## Defaults
+Home 23.5 · Away 28 · Away delay 45 min · Night 23:00–07:00 · On‑peak coast +2.0 ·
+Pre‑cool lead 90 min / depth 2.0 → 21.5 pre‑cool / 25.5 on‑peak coast on the ULO layout.
 
 ## Lovelace card — `climado-card`
 An Alarmo-style card: effective mode + reason, target vs. current temp, rate-tier
@@ -102,5 +108,7 @@ the saved plan. On-peak coast and pre-cool lead/depth remain device number entit
 With the integration loaded:
 - Toggle a presence/occupancy sensor and watch `sensor.*_effective_mode` /
   `*_control_reason` and the thermostat setpoint react (away only after the delay).
-- At night with phones away, confirm it stays in `night/bedroom`, not `away`.
+- At the night start, confirm the reason becomes `night/ecobee-sleep` and the
+  thermostat's displayed temperature tracks the **bedroom** sensor (if occupied
+  at the boundary it must not go `away` overnight).
 - Press **Heading home** and confirm `pre_arrival` engages and expires on arrival.

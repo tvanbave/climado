@@ -11,8 +11,10 @@ the initial seed / fallback. Structural settings (the climate + sensors) stay in
 the config entry and are edited via the options flow.
 
 Priority ladder (FR3):
-    vacation > manual-away > pre_arrival > away(daytime) > night bedroom-tracking
-    > rate-engine overlay (home) > mode default
+    vacation > manual-away > pre_arrival > away (daytime, or overnight if the
+    house was empty at the night boundary) > night (hand off to the ecobee's
+    native Sleep comfort / bedroom closed loop) > rate-engine overlay (home)
+    > mode default
 """
 from __future__ import annotations
 
@@ -28,13 +30,9 @@ from homeassistant.util import dt as dt_util
 from .const import (
     CONF_AWAY_DELAY,
     CONF_AWAY_TEMP,
-    CONF_BEDROOM_TARGET,
-    CONF_BEDROOM_TEMP_SENSOR,
     CONF_CLIMATE_ENTITY,
     CONF_COMFORT_HOME,
     CONF_MAIN_TEMP_SENSOR,
-    CONF_NIGHT_CLAMP_MAX,
-    CONF_NIGHT_CLAMP_MIN,
     CONF_NIGHT_END,
     CONF_NIGHT_START,
     CONF_OCCUPANCY_ENTITIES,
@@ -51,10 +49,7 @@ from .const import (
     STRUCTURAL_KEYS,
     DEFAULT_AWAY_DELAY,
     DEFAULT_AWAY_TEMP,
-    DEFAULT_BEDROOM_TARGET,
     DEFAULT_COMFORT_HOME,
-    DEFAULT_NIGHT_CLAMP_MAX,
-    DEFAULT_NIGHT_CLAMP_MIN,
     DEFAULT_NIGHT_END,
     DEFAULT_NIGHT_START,
     DEFAULT_ONPEAK_COAST,
@@ -164,6 +159,12 @@ class ClimadoCoordinator(DataUpdateCoordinator):
 
     @callback
     def _handle_sensor_event(self, event: Event) -> None:
+        old = event.data.get("old_state")
+        new = event.data.get("new_state")
+        # Ignore attribute-only churn (e.g. phone GPS coordinate updates) —
+        # only an actual state-value change can affect presence/occupancy.
+        if old is not None and new is not None and old.state == new.state:
+            return
         self.hass.async_create_task(self.async_request_refresh())
 
     # ---- pre-arrival API ----
@@ -238,17 +239,6 @@ class ClimadoCoordinator(DataUpdateCoordinator):
                 _LOGGER.warning("Climado: invalid stored rate plan; using ULO default")
         return default_ulo_plan(coast, lead, depth)
 
-    def _night_target(self, comfort_home: float) -> tuple[float, str]:
-        bed = self._get_float(self.opt(CONF_BEDROOM_TEMP_SENSOR))
-        main = self._get_float(self.opt(CONF_MAIN_TEMP_SENSOR))
-        if bed is None or main is None:
-            return comfort_home, "night/fallback"
-        target = float(self.tune(CONF_BEDROOM_TARGET, DEFAULT_BEDROOM_TARGET)) - bed + main
-        lo = float(self.tune(CONF_NIGHT_CLAMP_MIN, DEFAULT_NIGHT_CLAMP_MIN))
-        hi = float(self.tune(CONF_NIGHT_CLAMP_MAX, DEFAULT_NIGHT_CLAMP_MAX))
-        target = min(hi, max(lo, target))
-        return round(target * 2) / 2, "night/bedroom"
-
     # ---- core evaluation ----
     async def _async_update_data(self) -> dict:
         now = dt_util.now()
@@ -291,7 +281,7 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         ) else None
 
         plan = self._plan()
-        tier = plan.tier_at(now, is_workday).name
+        tier = plan.tier_at(now, is_workday)
 
         if self.vacation or forced == MODE_VACATION:
             mode, action, reason = MODE_VACATION, ("temp", vacation_temp), "vacation"
@@ -306,11 +296,13 @@ class ClimadoCoordinator(DataUpdateCoordinator):
             and (not is_night or self._night_away_allowed)
         ):
             mode, action, reason = MODE_AWAY, ("temp", away_temp), "away"
-        elif is_night and forced != MODE_HOME:
-            # Hand overnight to the ecobee's native Sleep comfort (Bedroom sensor):
+        elif forced == MODE_SLEEP or (is_night and forced != MODE_HOME):
+            # Hand control to the ecobee's native Sleep comfort (Bedroom sensor):
             # a true closed loop on the bedroom that reaches target and cycles off,
             # which outperforms a computed main-floor hold for a hot 2nd-floor room.
-            mode, action, reason = MODE_SLEEP, ("preset", "sleep"), "night/ecobee-sleep"
+            # Also honors a manual "sleep" override at any time of day.
+            mode, action = MODE_SLEEP, ("preset", "sleep")
+            reason = "manual_sleep" if forced == MODE_SLEEP else "night/ecobee-sleep"
         else:
             offset, rtier = rate_offset(plan, now, is_workday)
             mode, action, reason = MODE_HOME, ("temp", comfort_home + offset), f"home/{rtier}"
@@ -411,7 +403,8 @@ class ClimadoCoordinator(DataUpdateCoordinator):
             "reason": reason,
             "target": target,
             "applied": applied,
-            "tier": tier,
+            "tier": tier.name if tier is not None else None,
+            "tier_id": tier.tier_id if tier is not None else None,
             "rate_plan": rate_plan,
             "occupied": occupied,
             "is_night": is_night,

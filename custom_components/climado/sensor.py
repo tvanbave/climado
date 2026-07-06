@@ -103,5 +103,5 @@ class ClimadoSensor(CoordinatorEntity, SensorEntity):
                 "manual_override": data.get("manual_mode"),
             }
         if self.entity_description.key == "rate_tier":
-            return {"plan": data.get("rate_plan")}
+            return {"plan": data.get("rate_plan"), "tier_id": data.get("tier_id")}
         return None

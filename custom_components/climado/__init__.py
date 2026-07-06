@@ -10,8 +10,10 @@ from homeassistant.components.frontend import add_extra_js_url
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.exceptions import ServiceValidationError
 
 from .const import (
+    ATTR_FORCE,
     ATTR_LEAD_MINUTES,
     ATTR_ONLY_IF_ABOVE,
     ATTR_PLAN,
@@ -36,6 +38,7 @@ _START_SCHEMA = vol.Schema(
         vol.Optional(ATTR_LEAD_MINUTES): vol.All(vol.Coerce(int), vol.Range(min=0, max=720)),
         vol.Optional(ATTR_TARGET): vol.All(vol.Coerce(float), vol.Range(min=10, max=33.5)),
         vol.Optional(ATTR_ONLY_IF_ABOVE): vol.All(vol.Coerce(float), vol.Range(min=10, max=40)),
+        vol.Optional(ATTR_FORCE, default=False): vol.Boolean(),
     }
 )
 
@@ -90,11 +93,12 @@ def _register_services(hass: HomeAssistant) -> None:
         return
 
     async def _handle_start(call: ServiceCall) -> None:
-        for coordinator in hass.data.get(DOMAIN, {}).values():
+        for coordinator in list(hass.data.get(DOMAIN, {}).values()):
             coordinator.start_prearrival(
                 call.data.get(ATTR_LEAD_MINUTES),
                 call.data.get(ATTR_TARGET),
                 call.data.get(ATTR_ONLY_IF_ABOVE),
+                force=call.data.get(ATTR_FORCE, False),
             )
             await coordinator.async_request_refresh()
 
@@ -111,7 +115,7 @@ def _register_services(hass: HomeAssistant) -> None:
                 "weekend": normalize_schedule(raw["weekend"]),
             }
         except (KeyError, TypeError, ValueError) as err:
-            raise vol.Invalid(f"invalid rate plan: {err}") from err
+            raise ServiceValidationError(f"Invalid rate plan: {err}") from err
         for coordinator in list(hass.data.get(DOMAIN, {}).values()):
             entry = coordinator.entry
             hass.config_entries.async_update_entry(

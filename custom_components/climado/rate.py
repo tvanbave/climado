@@ -123,7 +123,12 @@ def _time_to_hour(t: time) -> int:
 
 
 def normalize_schedule(rows) -> list[list]:
-    """Validate [[start_hour, end_hour, tier_id], ...]; raise ValueError if bad."""
+    """Validate [[start_hour, end_hour, tier_id], ...]; raise ValueError if bad.
+
+    Returns the blocks sorted chronologically and requires full, gap-free
+    coverage of 00-24 — ``tier_at``/``next_higher_boundary`` assume ordered,
+    contiguous blocks.
+    """
     out: list[list] = []
     for row in rows:
         if len(row) != 3:
@@ -136,6 +141,12 @@ def normalize_schedule(rows) -> list[list]:
         out.append([start, end, tid])
     if not out:
         raise ValueError("empty schedule")
+    out.sort(key=lambda r: r[0])
+    if out[0][0] != 0 or out[-1][1] != 24:
+        raise ValueError("schedule must cover 00:00-24:00")
+    for prev, nxt in zip(out, out[1:]):
+        if nxt[0] != prev[1]:
+            raise ValueError(f"schedule gap/overlap at hour {nxt[0]}")
     return out
 
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 from homeassistant.const import Platform
 
 DOMAIN = "climado"
-VERSION = "0.3.4"
+VERSION = "0.3.5"
 
 PLATFORMS = [
     Platform.SELECT,
@@ -28,13 +28,10 @@ CONF_RATE_PLAN = "rate_plan"  # custom schedule {weekday:[[s,e,tier]...], weeken
 CONF_COMFORT_HOME = "comfort_home"
 CONF_AWAY_TEMP = "away_temp"
 CONF_VACATION_TEMP = "vacation_temp"
-CONF_BEDROOM_TARGET = "bedroom_target"
 
 CONF_AWAY_DELAY = "away_delay_minutes"
 CONF_NIGHT_START = "night_start"
 CONF_NIGHT_END = "night_end"
-CONF_NIGHT_CLAMP_MIN = "night_clamp_min"
-CONF_NIGHT_CLAMP_MAX = "night_clamp_max"
 
 # Rate engine (Ontario ULO preset knobs for M1; full tier editor is M2/M3)
 CONF_ONPEAK_COAST = "onpeak_coast_offset"
@@ -51,12 +48,9 @@ DEFAULT_NAME = "Main Floor"
 DEFAULT_COMFORT_HOME = 23.5
 DEFAULT_AWAY_TEMP = 28.0
 DEFAULT_VACATION_TEMP = 28.0
-DEFAULT_BEDROOM_TARGET = 23.0
 DEFAULT_AWAY_DELAY = 45
 DEFAULT_NIGHT_START = "23:00:00"
 DEFAULT_NIGHT_END = "07:00:00"
-DEFAULT_NIGHT_CLAMP_MIN = 19.0
-DEFAULT_NIGHT_CLAMP_MAX = 25.0
 DEFAULT_ONPEAK_COAST = 2.0
 DEFAULT_PRECOOL_LEAD = 90
 DEFAULT_PRECOOL_DEPTH = 2.0
@@ -89,6 +83,7 @@ ATTR_PLAN = "plan"
 ATTR_LEAD_MINUTES = "lead_minutes"
 ATTR_TARGET = "target"
 ATTR_ONLY_IF_ABOVE = "only_if_above"
+ATTR_FORCE = "force"
 
 # ---- Tunable config exposed as device entities (entity_category=config) ----
 # (key, name, min, max, step, unit, icon, default)
@@ -96,10 +91,7 @@ NUMBER_TUNABLES = [
     (CONF_COMFORT_HOME, "Home comfort", 10, 33.5, 0.5, "°C", "mdi:home-thermometer", DEFAULT_COMFORT_HOME),
     (CONF_AWAY_TEMP, "Away setpoint", 10, 33.5, 0.5, "°C", "mdi:home-export-outline", DEFAULT_AWAY_TEMP),
     (CONF_VACATION_TEMP, "Vacation setpoint", 10, 33.5, 0.5, "°C", "mdi:bag-suitcase", DEFAULT_VACATION_TEMP),
-    (CONF_BEDROOM_TARGET, "Bedroom night target", 10, 30, 0.5, "°C", "mdi:bed", DEFAULT_BEDROOM_TARGET),
     (CONF_AWAY_DELAY, "Away delay", 5, 240, 5, "min", "mdi:timer-sand", DEFAULT_AWAY_DELAY),
-    (CONF_NIGHT_CLAMP_MIN, "Night floor", 10, 30, 0.5, "°C", "mdi:thermometer-low", DEFAULT_NIGHT_CLAMP_MIN),
-    (CONF_NIGHT_CLAMP_MAX, "Night ceiling", 10, 33.5, 0.5, "°C", "mdi:thermometer-high", DEFAULT_NIGHT_CLAMP_MAX),
     (CONF_ONPEAK_COAST, "On-peak coast", 0, 6, 0.5, "°C", "mdi:trending-up", DEFAULT_ONPEAK_COAST),
     (CONF_PRECOOL_LEAD, "Pre-cool lead", 0, 240, 15, "min", "mdi:snowflake-alert", DEFAULT_PRECOOL_LEAD),
     (CONF_PRECOOL_DEPTH, "Pre-cool depth", 0, 6, 0.5, "°C", "mdi:snowflake", DEFAULT_PRECOOL_DEPTH),

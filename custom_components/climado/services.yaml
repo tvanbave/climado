@@ -32,6 +32,12 @@ start_pre_arrival:
           max: 40
           step: 0.5
           unit_of_measurement: "°C"
+    force:
+      name: Force
+      description: Engage even if the house is below the only-if-above threshold.
+      default: false
+      selector:
+        boolean:
 
 clear_pre_arrival:
   name: Clear pre-arrival
