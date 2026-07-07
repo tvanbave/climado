@@ -453,6 +453,8 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         state = self._state(
             mode, reason, target, tier, occupied, is_night, applied, plan_to_dict(plan)
         )
+        state["is_workday"] = is_workday
+        state["rate_profile"] = "weekday" if is_workday else "weekend"
         state["main_temp"] = self._get_float(self.opt(CONF_MAIN_TEMP_SENSOR))
         state["bedroom_temp"] = self._get_float(self.opt(CONF_BEDROOM_TEMP_SENSOR))
         state["hvac_action"] = self._climate_attr("hvac_action")

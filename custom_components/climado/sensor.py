@@ -111,5 +111,10 @@ class ClimadoSensor(CoordinatorEntity, SensorEntity):
                 "next_transition": data.get("next_transition"),
             }
         if self.entity_description.key == "rate_tier":
-            return {"plan": data.get("rate_plan"), "tier_id": data.get("tier_id")}
+            return {
+                "plan": data.get("rate_plan"),
+                "tier_id": data.get("tier_id"),
+                "profile": data.get("rate_profile"),
+                "is_workday": data.get("is_workday"),
+            }
         return None

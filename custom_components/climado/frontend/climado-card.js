@@ -12,6 +12,7 @@
  *   # optional:
  *   # climate: climate.main_floor             # to show current room temp
  *   # rate_plan: { weekday: [[0,7,"ultra_low"],...], weekend: [...] }
+ *   # rate_editor: true                       # advanced: edit/save both schedules
  *
  * Status: fully functional against the v0.3+ backend. The card ships inside the
  * integration and is served + auto-registered at /climado_static/climado-card.js;
@@ -202,6 +203,7 @@ class ClimadoCard extends LitElement {
   }
 
   _paint(profile, hour) {
+    if (!this._config?.rate_editor) return;
     if (!this._draft) this._initDraft(this._entities());
     const cur = this._draft[profile][hour];
     const next = TIER_CYCLE[(TIER_CYCLE.indexOf(cur) + 1) % TIER_CYCLE.length];
@@ -268,12 +270,14 @@ class ClimadoCard extends LitElement {
     const modeReady = this._available(e.mode);
     const effectiveReady = this._available(e.effective_mode);
     const controlsReady = modeReady && effectiveReady;
+    const editor = this._config.rate_editor === true;
     const mode = cleanValue(this._state(e.mode)?.state) || "auto";
     const eff = cleanValue(this._state(e.effective_mode)?.state);
     const reason = cleanValue(this._state(e.reason)?.state);
     const target = numericValue(this._state(e.target)?.state);
     const tier = cleanValue(this._state(e.tier)?.state);
     const tierId = this._tierId(e, tier);
+    const rateProfile = this._rateProfile(e);
     const presence = cleanValue(this._state(e.presence)?.state);
     const mainT = numericValue(a("main_temp"));
     const bedT = numericValue(a("bedroom_temp"));
@@ -401,10 +405,12 @@ class ClimadoCard extends LitElement {
 
         <div class="grid-title">
           <span class="grid-main">Rate plan</span>
-          <span class="hint">tap an hour to change tier</span>
-          ${dirty ? html`<span class="unsaved">Unsaved changes</span>` : ""}
+          <span class="hint">${editor ? "tap an hour to change tier" : this._profileLabel(rateProfile)}</span>
+          ${dirty && editor ? html`<span class="unsaved">Unsaved changes</span>` : ""}
         </div>
-        ${this._grid("weekday", "Weekday")} ${this._grid("weekend", "Weekend / holiday")}
+        ${editor
+          ? html`${this._grid("weekday", "Weekday", true)} ${this._grid("weekend", "Weekend / holiday", true)}`
+          : this._grid(rateProfile, this._profileLabel(rateProfile), false)}
 
         <div class="legend">
           ${Object.entries(TIERS).map(
@@ -413,14 +419,16 @@ class ClimadoCard extends LitElement {
           )}
         </div>
 
-        <div class="row">
-          <button class="action" ?disabled=${!controlsReady || !dirty} @click=${() => this._save()}>
-            <ha-icon icon="mdi:content-save"></ha-icon><span>Save rate plan</span>
-          </button>
-          <button class="action ghost" ?disabled=${!dirty} @click=${() => this._initDraft(e)}>
-            <ha-icon icon="mdi:restore"></ha-icon><span>Reset</span>
-          </button>
-        </div>
+        ${editor
+          ? html`<div class="row">
+              <button class="action" ?disabled=${!controlsReady || !dirty} @click=${() => this._save()}>
+                <ha-icon icon="mdi:content-save"></ha-icon><span>Save rate plan</span>
+              </button>
+              <button class="action ghost" ?disabled=${!dirty} @click=${() => this._initDraft(e)}>
+                <ha-icon icon="mdi:restore"></ha-icon><span>Reset</span>
+              </button>
+            </div>`
+          : ""}
       </ha-card>
     `;
   }
@@ -432,6 +440,15 @@ class ClimadoCard extends LitElement {
     if (id && TIERS[id]) return id;
     const hit = Object.entries(TIERS).find(([, t]) => name && name.startsWith(t.name));
     return hit ? hit[0] : name;
+  }
+
+  _rateProfile(e) {
+    const profile = this._state(e.tier)?.attributes?.profile;
+    return profile === "weekend" ? "weekend" : "weekday";
+  }
+
+  _profileLabel(profile) {
+    return profile === "weekend" ? "Weekend / holiday" : "Weekday";
   }
 
   _round(v) {
@@ -515,11 +532,11 @@ class ClimadoCard extends LitElement {
     }
   }
 
-  _grid(profile, label) {
+  _grid(profile, label, editable = false) {
     const hours = this._draft[profile];
     const nowHour = new Date().getHours();
     return html`
-      <div class="gwrap">
+      <div class="gwrap ${editable ? "editable" : ""}">
         <div class="glabel">${label}</div>
         <div class="bar">
           ${hours.map(
@@ -527,7 +544,7 @@ class ClimadoCard extends LitElement {
               class="cell ${h === nowHour ? "now" : ""}"
               style="background:${TIERS[tier]?.color}"
               title="${h}:00 — ${TIERS[tier]?.name}"
-              @click=${() => this._paint(profile, h)}
+              @click=${editable ? () => this._paint(profile, h) : undefined}
             ></div>`
           )}
         </div>
@@ -777,8 +794,10 @@ class ClimadoCard extends LitElement {
         overflow: hidden;
       }
       .cell {
-        cursor: pointer;
         border-right: 1px solid rgba(0, 0, 0, 0.12);
+      }
+      .gwrap.editable .cell {
+        cursor: pointer;
       }
       .cell.now {
         box-shadow:
@@ -849,6 +868,7 @@ class ClimadoCardEditor extends LitElement {
     return [
       { name: "entity", selector: { entity: { domain: "select" } } },
       { name: "climate", selector: { entity: { domain: "climate" } } },
+      { name: "rate_editor", selector: { boolean: {} } },
     ];
   }
 
@@ -868,7 +888,12 @@ class ClimadoCardEditor extends LitElement {
       .hass=${this.hass}
       .data=${this._config}
       .schema=${this._schema()}
-      .computeLabel=${(s) => (s.name === "entity" ? "Climado mode entity" : "Thermostat (optional)")}
+      .computeLabel=${(s) =>
+        ({
+          entity: "Climado mode entity",
+          climate: "Thermostat (optional)",
+          rate_editor: "Enable rate-plan editor",
+        }[s.name] || s.name)}
       @value-changed=${this._valueChanged}
     ></ha-form>`;
   }
@@ -886,4 +911,4 @@ window.customCards.push({
   documentation: "https://github.com/tvanbave/climado",
 });
 
-console.info("%c CLIMADO-CARD %c 0.3.11 ", "background:#1565c0;color:#fff", "");
+console.info("%c CLIMADO-CARD %c 0.3.12 ", "background:#1565c0;color:#fff", "");
