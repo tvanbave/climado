@@ -57,6 +57,10 @@ const MODE_ICON = {
   vacation: "mdi:bag-suitcase",
 };
 
+function hoursEqual(a, b) {
+  return Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((v, i) => v === b[i]);
+}
+
 function blocksToHours(blocks) {
   // -> array[24] of tier ids
   const hours = new Array(24).fill(TIER_CYCLE[0]);
@@ -111,6 +115,7 @@ class ClimadoCard extends LitElement {
     if (!config.entity) throw new Error("Set 'entity' to a Climado entity");
     this._config = config;
     this._draft = null; // lazy-init from plan
+    this._baseDraft = null;
   }
 
   getCardSize() {
@@ -212,22 +217,40 @@ class ClimadoCard extends LitElement {
       weekday: blocksToHours(plan.weekday),
       weekend: blocksToHours(plan.weekend),
     };
+    this._baseDraft = {
+      weekday: [...this._draft.weekday],
+      weekend: [...this._draft.weekend],
+    };
   }
 
   async _save() {
-    if (!this._draft) return;
+    if (!this._draft || !this._dirty()) return;
     const plan = {
       weekday: hoursToBlocks(this._draft.weekday),
       weekend: hoursToBlocks(this._draft.weekend),
     };
     try {
       await this.hass.callService("climado", "set_rate_plan", { plan });
+      this._baseDraft = {
+        weekday: [...this._draft.weekday],
+        weekend: [...this._draft.weekend],
+      };
+      this.requestUpdate();
       this._notify("Climado: rate plan saved");
     } catch (err) {
       this._notify(
         `Climado: failed to save rate plan${err?.message ? ` — ${err.message}` : ""} (see Home Assistant logs).`
       );
     }
+  }
+
+  _dirty() {
+    return !!(
+      this._draft &&
+      this._baseDraft &&
+      (!hoursEqual(this._draft.weekday, this._baseDraft.weekday) ||
+        !hoursEqual(this._draft.weekend, this._baseDraft.weekend))
+    );
   }
 
   // ---- render ----
@@ -271,12 +294,16 @@ class ClimadoCard extends LitElement {
     const nextT = a("next_transition");
     const unavailable = !effectiveReady;
     const off = eff === "disabled" || (enableReady && !enableOn);
+    const dirty = this._dirty();
+    const canResume = !!(holdUntil || preUntil);
     const bigTemp = holdTemp != null ? holdTemp : target;
     const bigLabel = holdTemp != null ? "Hold" : regulating === "bedroom" ? "Bedroom target" : "Target";
     const title = unavailable ? "Unavailable" : this._humanMode(eff);
     const subtitle = unavailable
       ? "Waiting for Climado to report its state"
       : this._humanReason(reason);
+    const controlLabel = mode === "auto" ? "Auto control" : `Override: ${this._humanMode(mode)}`;
+    const hvacInfo = this._hvacInfo(hvac);
 
     return html`
       <ha-card class="${off ? "off" : ""} ${unavailable ? "unavailable" : ""}">
@@ -286,6 +313,7 @@ class ClimadoCard extends LitElement {
             <div class="reason">
               <span class="dot ${cooling ? "cool" : ""}"></span>${subtitle}
             </div>
+            <div class="control-note">${controlLabel}</div>
           </div>
           <div class="temps">
             <div class="target">${this._temp(bigTemp)}</div>
@@ -305,13 +333,13 @@ class ClimadoCard extends LitElement {
               </div>`
             : ""}
           <div class="room">
-            <span class="rval ${cooling ? "cooling" : ""}">${cooling ? "Cooling" : hvac || "Idle"}</span>
+            <span class="rval ${hvacInfo.active ? "cooling" : ""}">${hvacInfo.label}</span>
             <span class="rlbl">AC</span>
           </div>
         </div>
 
         ${nextT && nextT.at
-          ? html`<div class="next">Next: ${nextT.label} at ${this._fmt(nextT.at)}</div>`
+          ? html`<div class="next">${this._nextText(nextT)}</div>`
           : ""}
 
         <div class="chips">
@@ -366,12 +394,16 @@ class ClimadoCard extends LitElement {
           <button class="action" ?disabled=${!prearrivalReady} @click=${() => this._press(e.prearrival)}>
             <ha-icon icon="mdi:home-clock"></ha-icon><span>Heading home</span>
           </button>
-          <button class="action ghost" ?disabled=${!resumeReady} @click=${() => this._press(e.resume)}>
+          <button class="action ghost" ?disabled=${!resumeReady || !canResume} @click=${() => this._press(e.resume)}>
             <ha-icon icon="mdi:restart"></ha-icon><span>Resume</span>
           </button>
         </div>
 
-        <div class="grid-title">Rate plan <span>tap an hour to change tier</span></div>
+        <div class="grid-title">
+          <span class="grid-main">Rate plan</span>
+          <span class="hint">tap an hour to change tier</span>
+          ${dirty ? html`<span class="unsaved">Unsaved changes</span>` : ""}
+        </div>
         ${this._grid("weekday", "Weekday")} ${this._grid("weekend", "Weekend / holiday")}
 
         <div class="legend">
@@ -382,10 +414,10 @@ class ClimadoCard extends LitElement {
         </div>
 
         <div class="row">
-          <button class="action" ?disabled=${!controlsReady} @click=${() => this._save()}>
+          <button class="action" ?disabled=${!controlsReady || !dirty} @click=${() => this._save()}>
             <ha-icon icon="mdi:content-save"></ha-icon><span>Save rate plan</span>
           </button>
-          <button class="action ghost" @click=${() => this._initDraft(e)}>
+          <button class="action ghost" ?disabled=${!dirty} @click=${() => this._initDraft(e)}>
             <ha-icon icon="mdi:restore"></ha-icon><span>Reset</span>
           </button>
         </div>
@@ -450,6 +482,31 @@ class ClimadoCard extends LitElement {
     return reason;
   }
 
+  _hvacInfo(hvac) {
+    const value = cleanValue(hvac);
+    if (value === "cooling") return { label: "Cooling", active: true };
+    if (value === "fan") return { label: "Fan only", active: false };
+    if (value === "idle") return { label: "Idle", active: false };
+    if (value === "heating") return { label: "Heating", active: true };
+    return { label: value ? String(value).replace(/_/g, " ") : "Idle", active: false };
+  }
+
+  _nextText(next) {
+    if (!next || !next.at) return "";
+    const when = new Date(next.at);
+    if (Number.isNaN(when.getTime())) return `Next: ${next.label}`;
+    const diffMs = when.getTime() - Date.now();
+    const minutes = Math.max(0, Math.round(diffMs / 60000));
+    const time = this._fmt(next.at);
+    const relative =
+      minutes < 1
+        ? "now"
+        : minutes < 90
+          ? `in ${minutes} min`
+          : `in ${Math.round(minutes / 60)} hr`;
+    return `${next.label} ${relative} · ${time}`;
+  }
+
   _fmt(iso) {
     try {
       return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -504,6 +561,11 @@ class ClimadoCard extends LitElement {
       .reason {
         color: var(--secondary-text-color);
         font-size: 0.85em;
+      }
+      .control-note {
+        color: var(--secondary-text-color);
+        font-size: 0.76em;
+        margin-top: 4px;
       }
       ha-card.off {
         opacity: 0.6;
@@ -676,14 +738,25 @@ class ClimadoCard extends LitElement {
         color: var(--primary-text-color);
       }
       .grid-title {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-wrap: wrap;
         font-weight: 600;
         margin-top: 4px;
       }
-      .grid-title span {
+      .grid-title .hint {
         font-weight: 400;
         color: var(--secondary-text-color);
         font-size: 0.8em;
-        margin-left: 6px;
+      }
+      .grid-title .unsaved {
+        border-radius: 12px;
+        padding: 2px 8px;
+        background: rgba(249, 168, 37, 0.16);
+        color: #c17900;
+        font-size: 0.72em;
+        font-weight: 600;
       }
       .gwrap {
         display: flex;
@@ -708,8 +781,9 @@ class ClimadoCard extends LitElement {
         border-right: 1px solid rgba(0, 0, 0, 0.12);
       }
       .cell.now {
-        outline: 2px solid var(--primary-text-color);
-        outline-offset: -2px;
+        box-shadow:
+          inset 0 0 0 2px rgba(255, 255, 255, 0.85),
+          inset 0 0 0 4px rgba(0, 0, 0, 0.45);
       }
       .legend {
         display: flex;
@@ -812,4 +886,4 @@ window.customCards.push({
   documentation: "https://github.com/tvanbave/climado",
 });
 
-console.info("%c CLIMADO-CARD %c 0.3.10 ", "background:#1565c0;color:#fff", "");
+console.info("%c CLIMADO-CARD %c 0.3.11 ", "background:#1565c0;color:#fff", "");
