@@ -30,6 +30,7 @@ from homeassistant.util import dt as dt_util
 from .const import (
     CONF_AWAY_DELAY,
     CONF_AWAY_TEMP,
+    CONF_BEDROOM_TEMP_SENSOR,
     CONF_CLIMATE_ENTITY,
     CONF_COMFORT_HOME,
     CONF_MAIN_TEMP_SENSOR,
