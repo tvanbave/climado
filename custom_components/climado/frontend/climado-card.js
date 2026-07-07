@@ -31,6 +31,7 @@ const TIERS = {
 };
 
 const TIER_CYCLE = ["ultra_low", "off_peak", "mid_peak", "on_peak"];
+const EMPTY_STATES = new Set(["unknown", "unavailable", "none", ""]);
 
 const DEFAULT_PLAN = {
   weekday: [
@@ -49,11 +50,11 @@ const DEFAULT_PLAN = {
 
 const MODES = ["auto", "home", "away", "sleep", "vacation"];
 const MODE_ICON = {
-  auto: "🟢",
-  home: "🏠",
-  away: "🌙",
-  sleep: "🛏️",
-  vacation: "🧳",
+  auto: "mdi:circle-slice-8",
+  home: "mdi:home",
+  away: "mdi:weather-night",
+  sleep: "mdi:bed",
+  vacation: "mdi:bag-suitcase",
 };
 
 function blocksToHours(blocks) {
@@ -75,6 +76,19 @@ function hoursToBlocks(hours) {
     }
   }
   return blocks;
+}
+
+function cleanValue(value) {
+  if (value === undefined || value === null) return null;
+  const text = String(value);
+  return EMPTY_STATES.has(text.toLowerCase()) ? null : value;
+}
+
+function numericValue(value) {
+  const clean = cleanValue(value);
+  if (clean === null) return null;
+  const num = Number(clean);
+  return Number.isFinite(num) ? num : null;
 }
 
 class ClimadoCard extends LitElement {
@@ -132,18 +146,30 @@ class ClimadoCard extends LitElement {
     return id && this.hass.states[id] ? this.hass.states[id] : null;
   }
 
+  _available(id) {
+    const state = this._state(id);
+    return !!state && cleanValue(state.state) !== null;
+  }
+
+  _callable(id) {
+    const state = this._state(id);
+    return !!state && state.state !== "unavailable";
+  }
+
   _attr(id, key) {
     const s = this._state(id);
-    return s && s.attributes ? s.attributes[key] : undefined;
+    return s && s.attributes ? cleanValue(s.attributes[key]) : undefined;
   }
 
   _backendPlan(e) {
     const attr = e && this._state(e.tier)?.attributes?.plan;
-    return attr || this._config.rate_plan || DEFAULT_PLAN;
+    const plan = attr || this._config.rate_plan || DEFAULT_PLAN;
+    return plan?.weekday && plan?.weekend ? plan : DEFAULT_PLAN;
   }
 
   // ---- actions ----
   _setMode(e, mode) {
+    if (!this._available(e.mode)) return;
     this.hass.callService("select", "select_option", {
       entity_id: e.mode,
       option: mode,
@@ -151,12 +177,12 @@ class ClimadoCard extends LitElement {
   }
 
   _toggle(entity) {
-    if (!entity) return;
+    if (!this._available(entity)) return;
     this.hass.callService("switch", "toggle", { entity_id: entity });
   }
 
   _press(entity) {
-    if (!entity) return;
+    if (!this._callable(entity)) return;
     this.hass.callService("button", "press", { entity_id: entity });
   }
 
@@ -216,41 +242,53 @@ class ClimadoCard extends LitElement {
     if (!this._draft) this._initDraft(e);
 
     const a = (k) => this._attr(e.effective_mode, k);
-    const mode = this._state(e.mode)?.state || "auto";
-    const eff = this._state(e.effective_mode)?.state || "—";
-    const reason = this._state(e.reason)?.state || "";
-    const target = this._state(e.target)?.state;
-    const tier = this._state(e.tier)?.state || "";
+    const modeReady = this._available(e.mode);
+    const effectiveReady = this._available(e.effective_mode);
+    const controlsReady = modeReady && effectiveReady;
+    const mode = cleanValue(this._state(e.mode)?.state) || "auto";
+    const eff = cleanValue(this._state(e.effective_mode)?.state);
+    const reason = cleanValue(this._state(e.reason)?.state);
+    const target = numericValue(this._state(e.target)?.state);
+    const tier = cleanValue(this._state(e.tier)?.state);
     const tierId = this._tierId(e, tier);
-    const presence = this._state(e.presence)?.state || "";
-    const mainT = a("main_temp");
-    const bedT = a("bedroom_temp");
-    const hvac = a("hvac_action");
+    const presence = cleanValue(this._state(e.presence)?.state);
+    const mainT = numericValue(a("main_temp"));
+    const bedT = numericValue(a("bedroom_temp"));
+    const hvac = cleanValue(a("hvac_action"));
     const cooling = hvac === "cooling";
-    const regulating = a("regulating");
-    const enableOn = this._state(e.enable)?.state === "on";
-    const vacOn = this._state(e.vacation)?.state === "on";
-    const preUntil = a("prearrival_until");
+    const regulating = cleanValue(a("regulating"));
+    const enableReady = this._available(e.enable);
+    const vacationReady = this._available(e.vacation);
+    const prearrivalReady = this._callable(e.prearrival);
+    const resumeReady = this._callable(e.resume);
+    const enableOn = enableReady && this._state(e.enable)?.state === "on";
+    const vacOn = vacationReady && this._state(e.vacation)?.state === "on";
+    const preUntil = cleanValue(a("prearrival_until"));
     const holdActive = a("manual_hold_active");
     const holdUntil = holdActive ? a("manual_hold_until") : null;
     const holdVal = a("manual_hold_value");
-    const holdTemp = Array.isArray(holdVal) && holdVal[0] === "temp" ? holdVal[1] : null;
+    const holdTemp = Array.isArray(holdVal) && holdVal[0] === "temp" ? numericValue(holdVal[1]) : null;
     const nextT = a("next_transition");
-    const off = eff === "disabled" || !enableOn;
+    const unavailable = !effectiveReady;
+    const off = eff === "disabled" || (enableReady && !enableOn);
     const bigTemp = holdTemp != null ? holdTemp : target;
     const bigLabel = holdTemp != null ? "Hold" : regulating === "bedroom" ? "Bedroom target" : "Target";
+    const title = unavailable ? "Unavailable" : this._humanMode(eff);
+    const subtitle = unavailable
+      ? "Waiting for Climado to report its state"
+      : this._humanReason(reason);
 
     return html`
-      <ha-card class=${off ? "off" : ""}>
+      <ha-card class="${off ? "off" : ""} ${unavailable ? "unavailable" : ""}">
         <div class="head">
           <div>
-            <div class="mode">${this._humanMode(eff)}</div>
+            <div class="mode">${title}</div>
             <div class="reason">
-              <span class="dot ${cooling ? "cool" : ""}"></span>${this._humanReason(reason)}
+              <span class="dot ${cooling ? "cool" : ""}"></span>${subtitle}
             </div>
           </div>
           <div class="temps">
-            <div class="target">${bigTemp != null ? `${bigTemp}°` : "—"}</div>
+            <div class="target">${this._temp(bigTemp)}</div>
             <div class="tlabel">${bigLabel}</div>
           </div>
         </div>
@@ -258,16 +296,16 @@ class ClimadoCard extends LitElement {
         <div class="rooms">
           ${mainT != null
             ? html`<div class="room ${regulating === "main" ? "reg" : ""}">
-                <span class="rval">${this._round(mainT)}°</span><span class="rlbl">Main floor</span>
+                <span class="rval">${this._temp(mainT)}</span><span class="rlbl">Main floor</span>
               </div>`
             : ""}
           ${bedT != null
             ? html`<div class="room ${regulating === "bedroom" ? "reg" : ""}">
-                <span class="rval">${this._round(bedT)}°</span><span class="rlbl">Bedroom</span>
+                <span class="rval">${this._temp(bedT)}</span><span class="rlbl">Bedroom</span>
               </div>`
             : ""}
           <div class="room">
-            <span class="rval ${cooling ? "cooling" : ""}">${cooling ? "❄ cooling" : hvac || "idle"}</span>
+            <span class="rval ${cooling ? "cooling" : ""}">${cooling ? "Cooling" : hvac || "Idle"}</span>
             <span class="rlbl">AC</span>
           </div>
         </div>
@@ -277,10 +315,14 @@ class ClimadoCard extends LitElement {
           : ""}
 
         <div class="chips">
-          <span class="chip" style="--c:${TIERS[tierId]?.color || "#999"}">
-            ${TIERS[tierId]?.name || tier || "tier"}
-          </span>
-          <span class="chip ${presence === "occupied" ? "ok" : "warn"}">${presence}</span>
+          ${tier || tierId
+            ? html`<span class="chip" style="--c:${TIERS[tierId]?.color || "#999"}">
+                ${TIERS[tierId]?.name || tier}
+              </span>`
+            : html`<span class="chip muted">Rate tier unavailable</span>`}
+          ${presence
+            ? html`<span class="chip ${presence === "occupied" ? "ok" : "warn"}">${presence}</span>`
+            : html`<span class="chip muted">Presence unavailable</span>`}
           ${preUntil
             ? html`<span class="chip pre">pre-cool → ${this._fmt(preUntil)}</span>`
             : ""}
@@ -293,30 +335,39 @@ class ClimadoCard extends LitElement {
           ${MODES.map(
             (m) => html`<button
               class="modebtn ${mode === m ? "sel" : ""}"
+              ?disabled=${!modeReady}
               @click=${() => this._setMode(e, m)}
             >
-              <span>${MODE_ICON[m]}</span>${m}
+              <ha-icon .icon=${MODE_ICON[m]}></ha-icon><span>${m}</span>
             </button>`
           )}
         </div>
 
         <div class="row">
           <label class="tgl">
-            <ha-switch .checked=${enableOn} @change=${() => this._toggle(e.enable)}></ha-switch>
+            <ha-switch
+              .checked=${enableOn}
+              .disabled=${!enableReady}
+              @change=${() => this._toggle(e.enable)}
+            ></ha-switch>
             Climado control
           </label>
           <label class="tgl">
-            <ha-switch .checked=${vacOn} @change=${() => this._toggle(e.vacation)}></ha-switch>
+            <ha-switch
+              .checked=${vacOn}
+              .disabled=${!vacationReady}
+              @change=${() => this._toggle(e.vacation)}
+            ></ha-switch>
             Vacation
           </label>
         </div>
 
         <div class="row">
-          <button class="action" @click=${() => this._press(e.prearrival)}>
-            🏠⏱ Heading home
+          <button class="action" ?disabled=${!prearrivalReady} @click=${() => this._press(e.prearrival)}>
+            <ha-icon icon="mdi:home-clock"></ha-icon><span>Heading home</span>
           </button>
-          <button class="action ghost" @click=${() => this._press(e.resume)}>
-            ↺ Resume
+          <button class="action ghost" ?disabled=${!resumeReady} @click=${() => this._press(e.resume)}>
+            <ha-icon icon="mdi:restart"></ha-icon><span>Resume</span>
           </button>
         </div>
 
@@ -331,8 +382,12 @@ class ClimadoCard extends LitElement {
         </div>
 
         <div class="row">
-          <button class="action" @click=${this._save}>Save rate plan</button>
-          <button class="action ghost" @click=${() => this._initDraft(e)}>Reset</button>
+          <button class="action" ?disabled=${!controlsReady} @click=${() => this._save()}>
+            <ha-icon icon="mdi:content-save"></ha-icon><span>Save rate plan</span>
+          </button>
+          <button class="action ghost" @click=${() => this._initDraft(e)}>
+            <ha-icon icon="mdi:restore"></ha-icon><span>Reset</span>
+          </button>
         </div>
       </ha-card>
     `;
@@ -352,6 +407,11 @@ class ClimadoCard extends LitElement {
     return Number.isFinite(n) ? Math.round(n * 10) / 10 : v;
   }
 
+  _temp(v) {
+    const n = numericValue(v);
+    return n === null ? "—" : `${this._round(n)}°`;
+  }
+
   _humanMode(m) {
     return (
       {
@@ -362,11 +422,13 @@ class ClimadoCard extends LitElement {
         home: "Home",
         vacation: "Vacation",
         disabled: "Off",
+        unavailable: "Unavailable",
       }[m] || (m || "").replace(/_/g, " ")
     );
   }
 
   _humanReason(reason) {
+    if (!reason) return "Waiting for Climado to report its state";
     const map = {
       vacation: "Vacation setback",
       manual_away: "Away (manual)",
@@ -419,7 +481,7 @@ class ClimadoCard extends LitElement {
   static get styles() {
     return css`
       ha-card {
-        padding: 14px;
+        padding: 16px;
         display: flex;
         flex-direction: column;
         gap: 12px;
@@ -431,11 +493,13 @@ class ClimadoCard extends LitElement {
         display: flex;
         justify-content: space-between;
         align-items: flex-start;
+        gap: 14px;
       }
       .mode {
-        font-size: 1.5em;
+        font-size: 1.45em;
         font-weight: 600;
         text-transform: capitalize;
+        line-height: 1.15;
       }
       .reason {
         color: var(--secondary-text-color);
@@ -444,8 +508,12 @@ class ClimadoCard extends LitElement {
       ha-card.off {
         opacity: 0.6;
       }
+      ha-card.unavailable {
+        opacity: 0.78;
+      }
       .temps {
         text-align: right;
+        min-width: 76px;
       }
       .target {
         font-size: 1.9em;
@@ -495,6 +563,7 @@ class ClimadoCard extends LitElement {
       .room .rval {
         font-size: 1.15em;
         font-weight: 600;
+        line-height: 1.2;
       }
       .room .rval.cooling {
         color: #039be5;
@@ -525,6 +594,9 @@ class ClimadoCard extends LitElement {
       .chip.warn {
         background: #8d6e63;
       }
+      .chip.muted {
+        background: var(--disabled-text-color, #999);
+      }
       .chip.pre {
         background: #1565c0;
       }
@@ -540,8 +612,10 @@ class ClimadoCard extends LitElement {
         display: flex;
         flex-direction: column;
         align-items: center;
-        gap: 2px;
-        padding: 8px 0;
+        justify-content: center;
+        gap: 4px;
+        min-height: 58px;
+        padding: 8px 4px;
         border: 1px solid var(--divider-color);
         border-radius: 10px;
         background: var(--card-background-color);
@@ -550,10 +624,22 @@ class ClimadoCard extends LitElement {
         text-transform: capitalize;
         font-size: 0.8em;
       }
+      .modebtn ha-icon {
+        --mdc-icon-size: 20px;
+        color: var(--secondary-text-color);
+      }
       .modebtn.sel {
         border-color: var(--primary-color);
         background: var(--primary-color);
         color: var(--text-primary-color, #fff);
+      }
+      .modebtn.sel ha-icon {
+        color: currentColor;
+      }
+      .modebtn:disabled,
+      .action:disabled {
+        opacity: 0.45;
+        cursor: not-allowed;
       }
       .row {
         display: flex;
@@ -569,6 +655,11 @@ class ClimadoCard extends LitElement {
       }
       .action {
         flex: 1;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        min-height: 44px;
         padding: 10px;
         border: none;
         border-radius: 10px;
@@ -576,6 +667,9 @@ class ClimadoCard extends LitElement {
         color: var(--text-primary-color, #fff);
         cursor: pointer;
         font-size: 0.9em;
+      }
+      .action ha-icon {
+        --mdc-icon-size: 18px;
       }
       .action.ghost {
         background: var(--secondary-background-color);
@@ -635,6 +729,35 @@ class ClimadoCard extends LitElement {
         border-radius: 3px;
         display: inline-block;
       }
+      @media (max-width: 520px) {
+        ha-card {
+          padding: 14px;
+        }
+        .head {
+          align-items: stretch;
+        }
+        .modes {
+          gap: 5px;
+        }
+        .modebtn {
+          min-height: 54px;
+          font-size: 0.72em;
+        }
+        .gwrap {
+          align-items: stretch;
+          flex-direction: column;
+          gap: 5px;
+        }
+        .glabel {
+          width: auto;
+        }
+        .row {
+          gap: 8px;
+        }
+        .action {
+          min-width: 135px;
+        }
+      }
     `;
   }
 }
@@ -689,4 +812,4 @@ window.customCards.push({
   documentation: "https://github.com/tvanbave/climado",
 });
 
-console.info("%c CLIMADO-CARD %c 0.3.8 ", "background:#1565c0;color:#fff", "");
+console.info("%c CLIMADO-CARD %c 0.3.9 ", "background:#1565c0;color:#fff", "");
