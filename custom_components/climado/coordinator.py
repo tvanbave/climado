@@ -284,6 +284,34 @@ class ClimadoCoordinator(DataUpdateCoordinator):
             candidates.append(local)
         return dt_util.as_utc(min(candidates))
 
+    def _climate_attr(self, key):
+        state = self.hass.states.get(self.opt(CONF_CLIMATE_ENTITY))
+        return state.attributes.get(key) if state else None
+
+    def _next_transition(self, now, night_start, night_end, is_night, plan, is_workday):
+        """Soonest upcoming mode/rate change, as {at (UTC iso), label} for the card."""
+
+        def next_at(t: time) -> datetime:
+            d = now.replace(hour=t.hour, minute=t.minute, second=0, microsecond=0)
+            return d if d > now else d + timedelta(days=1)
+
+        events: list[tuple[datetime, str]] = []
+        if is_night:
+            events.append((next_at(night_end), "Day"))
+        else:
+            events.append((next_at(night_start), "Sleep"))
+            for start, _end, tier_id in (plan.weekday if is_workday else plan.weekend):
+                st = next_at(start)
+                events.append((st, plan.tiers[tier_id].name))
+                lead = plan.tiers[tier_id].precool_lead
+                if lead:
+                    events.append((st - timedelta(minutes=lead), "Pre-cool"))
+        events = [(w, l) for w, l in events if w > now]
+        if not events:
+            return None
+        when, label = min(events, key=lambda e: e[0])
+        return {"at": dt_util.as_utc(when).isoformat(), "label": label}
+
     def _record_command(self, command: tuple, wrote: bool) -> None:
         self._last_commanded = command
         if wrote:
@@ -421,9 +449,19 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         else:
             target = action[1]
             applied = await self._apply(target)
-        return self._state(
+        state = self._state(
             mode, reason, target, tier, occupied, is_night, applied, plan_to_dict(plan)
         )
+        state["main_temp"] = self._get_float(self.opt(CONF_MAIN_TEMP_SENSOR))
+        state["bedroom_temp"] = self._get_float(self.opt(CONF_BEDROOM_TEMP_SENSOR))
+        state["hvac_action"] = self._climate_attr("hvac_action")
+        # Which sensor the thermostat is regulating right now (bedroom during the
+        # ecobee Sleep handoff, else the main-floor thermostat sensor).
+        state["regulating"] = "bedroom" if mode == MODE_SLEEP else "main"
+        state["next_transition"] = self._next_transition(
+            now, night_start, night_end, is_night, plan, is_workday
+        )
+        return state
 
     async def _apply(self, target):
         if target is None:

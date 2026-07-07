@@ -215,43 +215,77 @@ class ClimadoCard extends LitElement {
     }
     if (!this._draft) this._initDraft(e);
 
+    const a = (k) => this._attr(e.effective_mode, k);
     const mode = this._state(e.mode)?.state || "auto";
     const eff = this._state(e.effective_mode)?.state || "—";
     const reason = this._state(e.reason)?.state || "";
     const target = this._state(e.target)?.state;
     const tier = this._state(e.tier)?.state || "";
+    const tierId = this._tierId(e, tier);
     const presence = this._state(e.presence)?.state || "";
-    const current = e.climate ? this._attr(e.climate, "current_temperature") : undefined;
+    const mainT = a("main_temp");
+    const bedT = a("bedroom_temp");
+    const hvac = a("hvac_action");
+    const cooling = hvac === "cooling";
+    const regulating = a("regulating");
     const enableOn = this._state(e.enable)?.state === "on";
     const vacOn = this._state(e.vacation)?.state === "on";
-    const preUntil = this._attr(e.effective_mode, "prearrival_until");
-    const holdUntil = this._attr(e.effective_mode, "manual_hold_active")
-      ? this._attr(e.effective_mode, "manual_hold_until")
-      : null;
+    const preUntil = a("prearrival_until");
+    const holdActive = a("manual_hold_active");
+    const holdUntil = holdActive ? a("manual_hold_until") : null;
+    const holdVal = a("manual_hold_value");
+    const holdTemp = Array.isArray(holdVal) && holdVal[0] === "temp" ? holdVal[1] : null;
+    const nextT = a("next_transition");
+    const off = eff === "disabled" || !enableOn;
+    const bigTemp = holdTemp != null ? holdTemp : target;
+    const bigLabel = holdTemp != null ? "Hold" : regulating === "bedroom" ? "Bedroom target" : "Target";
 
     return html`
-      <ha-card>
+      <ha-card class=${off ? "off" : ""}>
         <div class="head">
           <div>
-            <div class="mode">${eff.replace(/_/g, " ")}</div>
-            <div class="reason">${reason}</div>
+            <div class="mode">${this._humanMode(eff)}</div>
+            <div class="reason">
+              <span class="dot ${cooling ? "cool" : ""}"></span>${this._humanReason(reason)}
+            </div>
           </div>
           <div class="temps">
-            <div class="target">${target != null ? `${target}°` : "—"}</div>
-            ${current != null ? html`<div class="cur">now ${current}°</div>` : ""}
+            <div class="target">${bigTemp != null ? `${bigTemp}°` : "—"}</div>
+            <div class="tlabel">${bigLabel}</div>
           </div>
         </div>
 
+        <div class="rooms">
+          ${mainT != null
+            ? html`<div class="room ${regulating === "main" ? "reg" : ""}">
+                <span class="rval">${this._round(mainT)}°</span><span class="rlbl">Main floor</span>
+              </div>`
+            : ""}
+          ${bedT != null
+            ? html`<div class="room ${regulating === "bedroom" ? "reg" : ""}">
+                <span class="rval">${this._round(bedT)}°</span><span class="rlbl">Bedroom</span>
+              </div>`
+            : ""}
+          <div class="room">
+            <span class="rval ${cooling ? "cooling" : ""}">${cooling ? "❄ cooling" : hvac || "idle"}</span>
+            <span class="rlbl">AC</span>
+          </div>
+        </div>
+
+        ${nextT && nextT.at
+          ? html`<div class="next">Next: ${nextT.label} at ${this._fmt(nextT.at)}</div>`
+          : ""}
+
         <div class="chips">
-          <span class="chip" style="--c:${TIERS[this._tierId(e, tier)]?.color || "#999"}">
-            ${tier || "tier"}
+          <span class="chip" style="--c:${TIERS[tierId]?.color || "#999"}">
+            ${TIERS[tierId]?.name || tier || "tier"}
           </span>
           <span class="chip ${presence === "occupied" ? "ok" : "warn"}">${presence}</span>
           ${preUntil
-            ? html`<span class="chip pre">pre-cooling until ${this._fmt(preUntil)}</span>`
+            ? html`<span class="chip pre">pre-cool → ${this._fmt(preUntil)}</span>`
             : ""}
           ${holdUntil
-            ? html`<span class="chip hold">manual hold until ${this._fmt(holdUntil)}</span>`
+            ? html`<span class="chip hold">hold → ${this._fmt(holdUntil)}</span>`
             : ""}
         </div>
 
@@ -313,6 +347,47 @@ class ClimadoCard extends LitElement {
     return hit ? hit[0] : name;
   }
 
+  _round(v) {
+    const n = Number(v);
+    return Number.isFinite(n) ? Math.round(n * 10) / 10 : v;
+  }
+
+  _humanMode(m) {
+    return (
+      {
+        pre_arrival: "Heading home",
+        manual_hold: "Manual hold",
+        sleep: "Sleep",
+        away: "Away",
+        home: "Home",
+        vacation: "Vacation",
+        disabled: "Off",
+      }[m] || (m || "").replace(/_/g, " ")
+    );
+  }
+
+  _humanReason(reason) {
+    const map = {
+      vacation: "Vacation setback",
+      manual_away: "Away (manual)",
+      away: "Away — nobody home",
+      pre_arrival: "Pre-cooling for your arrival",
+      manual_hold: "Respecting your manual change",
+      manual_sleep: "Sleep (manual)",
+      "night/ecobee-sleep": "Overnight — cooling the bedroom",
+      "night/fallback": "Overnight",
+      disabled: "Climado is off",
+    };
+    if (map[reason]) return map[reason];
+    if (reason.startsWith("home/")) {
+      const r = reason.slice(5);
+      if (r.startsWith("coast:")) return "Coasting through on-peak";
+      if (r.startsWith("precool:")) return "Pre-cooling before on-peak";
+      if (r.startsWith("tier:")) return "Home comfort";
+    }
+    return reason;
+  }
+
   _fmt(iso) {
     try {
       return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -366,16 +441,71 @@ class ClimadoCard extends LitElement {
         color: var(--secondary-text-color);
         font-size: 0.85em;
       }
+      ha-card.off {
+        opacity: 0.6;
+      }
       .temps {
         text-align: right;
       }
       .target {
-        font-size: 1.6em;
+        font-size: 1.9em;
+        font-weight: 600;
+        line-height: 1;
+      }
+      .tlabel {
+        color: var(--secondary-text-color);
+        font-size: 0.75em;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+      .reason {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+      }
+      .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--disabled-text-color, #999);
+        display: inline-block;
+        flex: none;
+      }
+      .dot.cool {
+        background: #039be5;
+        box-shadow: 0 0 0 3px rgba(3, 155, 229, 0.25);
+      }
+      .rooms {
+        display: flex;
+        gap: 8px;
+      }
+      .room {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 1px;
+        padding: 8px 4px;
+        border-radius: 10px;
+        background: var(--secondary-background-color);
+      }
+      .room.reg {
+        outline: 2px solid var(--primary-color);
+      }
+      .room .rval {
+        font-size: 1.15em;
         font-weight: 600;
       }
-      .cur {
+      .room .rval.cooling {
+        color: #039be5;
+      }
+      .room .rlbl {
+        font-size: 0.72em;
         color: var(--secondary-text-color);
-        font-size: 0.85em;
+      }
+      .next {
+        font-size: 0.82em;
+        color: var(--secondary-text-color);
       }
       .chips {
         display: flex;
@@ -559,4 +689,4 @@ window.customCards.push({
   documentation: "https://github.com/tvanbave/climado",
 });
 
-console.info("%c CLIMADO-CARD %c 0.3.7 ", "background:#1565c0;color:#fff", "");
+console.info("%c CLIMADO-CARD %c 0.3.8 ", "background:#1565c0;color:#fff", "");

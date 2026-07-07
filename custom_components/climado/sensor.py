@@ -104,6 +104,11 @@ class ClimadoSensor(CoordinatorEntity, SensorEntity):
                 "manual_hold_active": data.get("manual_hold_active"),
                 "manual_hold_until": data.get("manual_hold_until"),
                 "manual_hold_value": data.get("manual_hold_value"),
+                "main_temp": data.get("main_temp"),
+                "bedroom_temp": data.get("bedroom_temp"),
+                "hvac_action": data.get("hvac_action"),
+                "regulating": data.get("regulating"),
+                "next_transition": data.get("next_transition"),
             }
         if self.entity_description.key == "rate_tier":
             return {"plan": data.get("rate_plan"), "tier_id": data.get("tier_id")}
