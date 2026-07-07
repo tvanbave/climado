@@ -237,9 +237,18 @@ class ClimadoCoordinator(DataUpdateCoordinator):
 
     # ---- manual-hold respect ----
     def clear_manual_hold(self) -> None:
-        """Drop any respected manual hold (explicit user action supersedes it)."""
+        """Drop any respected manual hold (explicit user action or expiry).
+
+        Also re-baselines command tracking: the thermostat still carries the
+        user's hold at this point, so without a reset the very next evaluation
+        would see actual != last-commanded and instantly re-latch the hold
+        (Resume would never resume; expiry would re-arm forever). With the
+        baseline cleared, detection stays disarmed until the engine's next
+        write re-establishes it.
+        """
         self._manual_hold = None
         self._manual_hold_until = None
+        self._last_commanded = None
 
     def _thermostat_actual(self) -> tuple | None:
         """The thermostat's current commanded state as ("preset", p) / ("temp", t)."""
@@ -282,9 +291,10 @@ class ClimadoCoordinator(DataUpdateCoordinator):
             # Only branches that outrank a manual hold can write while one is
             # active (away/vacation/pre-arrival/forced). Once the engine has
             # overwritten the thermostat, the hand adjustment is moot — drop it
-            # so control resumes normally afterwards (e.g. returning home after
-            # Away shouldn't leave the house pinned at the away setpoint).
-            self.clear_manual_hold()
+            # so control resumes normally afterwards. (Inline, NOT via
+            # clear_manual_hold(): that would null the baseline we just set.)
+            self._manual_hold = None
+            self._manual_hold_until = None
 
     def _plan(self):
         coast = float(self.tune(CONF_ONPEAK_COAST, DEFAULT_ONPEAK_COAST))
