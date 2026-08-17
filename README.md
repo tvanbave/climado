@@ -66,10 +66,13 @@ If someone changes the thermostat by hand (dial, ecobee app, or HA thermostat
 card), Climado detects it and **respects it until the next night‑window edge**
 (like ecobee's "hold until next transition"), then resumes control. Picking a
 mode in the select, pressing **Resume**, or vacation/away/pre‑arrival supersede
-the hold. Detection only arms in `auto` mode.
+the hold. Detection only arms in `auto` mode. A manual **Home** selection lasts
+until the next night start, while **Sleep** lasts until the next night end;
+Away and Vacation remain persistent until changed.
 
 ## Entities created
-- `select.*_mode` — manual override (`auto`/`home`/`away`/`sleep`/`vacation`).
+- `select.*_mode` — override (`auto`/`home`/`away`/`sleep`/`vacation`). Home and
+  Sleep return to Auto at their next day/night boundary.
 - `switch.*_climado_control` — master enable. `switch.*_vacation` — vacation hold.
 - `button.*_heading_home_pre_cool`, `button.*_resume_clear_pre_cool`.
 - `sensor.*` — effective mode, control reason, resolved target, rate tier, presence.

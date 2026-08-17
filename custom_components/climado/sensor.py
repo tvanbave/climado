@@ -101,6 +101,7 @@ class ClimadoSensor(CoordinatorEntity, SensorEntity):
                 "prearrival_active": data.get("prearrival_active"),
                 "prearrival_until": data.get("prearrival_until"),
                 "manual_override": data.get("manual_mode"),
+                "manual_override_until": data.get("manual_mode_until"),
                 "manual_hold_active": data.get("manual_hold_active"),
                 "manual_hold_until": data.get("manual_hold_until"),
                 "manual_hold_value": data.get("manual_hold_value"),

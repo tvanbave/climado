@@ -67,6 +67,7 @@ from .const import (
     DEVICE_COOL_MIN,
     DOMAIN,
     MODE_AWAY,
+    MODE_AUTO,
     MODE_DISABLED,
     MODE_HOME,
     MODE_MANUAL_HOLD,
@@ -110,7 +111,8 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         self.entry = entry
         self.enabled: bool = True
         self.vacation: bool = False
-        self.manual_mode: str = "auto"
+        self.manual_mode: str = MODE_AUTO
+        self.manual_mode_until: datetime | None = None
         # Tunables owned by the number/time entities; seeded from options.
         self.tunables: dict[str, object] = {}
         self._prearrival_until: datetime | None = None
@@ -154,6 +156,65 @@ class ClimadoCoordinator(DataUpdateCoordinator):
 
     def set_tunable(self, key, value) -> None:
         self.tunables[key] = value
+
+    def set_manual_mode(self, mode: str) -> None:
+        """Set a mode override; comfort overrides expire at their next boundary."""
+        self.manual_mode = mode
+        self.manual_mode_until = self._manual_mode_expiry(mode)
+
+    def restore_manual_mode(
+        self, mode: str, expires_at: datetime | None
+    ) -> None:
+        """Restore a mode and its persisted expiry after a restart."""
+        if mode not in (MODE_HOME, MODE_SLEEP):
+            self.manual_mode = mode
+            self.manual_mode_until = None
+            return
+        if expires_at is not None:
+            expires_at = dt_util.as_utc(expires_at)
+            if expires_at <= dt_util.utcnow():
+                self.manual_mode = MODE_AUTO
+                self.manual_mode_until = None
+                return
+            self.manual_mode = mode
+            self.manual_mode_until = expires_at
+            return
+        # Upgrade path for states saved before timed overrides existed. If its
+        # boundary already passed in the current day/night phase, do not revive
+        # the formerly persistent override for another full cycle.
+        now = dt_util.now()
+        night_start = _parse_time(
+            self.tune(CONF_NIGHT_START, DEFAULT_NIGHT_START)
+        )
+        night_end = _parse_time(self.tune(CONF_NIGHT_END, DEFAULT_NIGHT_END))
+        is_night = _in_window(now.time(), night_start, night_end)
+        if (mode == MODE_HOME and is_night) or (
+            mode == MODE_SLEEP and not is_night
+        ):
+            self.manual_mode = MODE_AUTO
+            self.manual_mode_until = None
+            return
+        self.set_manual_mode(mode)
+
+    def _manual_mode_expiry(self, mode: str) -> datetime | None:
+        if mode == MODE_HOME:
+            boundary = _parse_time(
+                self.tune(CONF_NIGHT_START, DEFAULT_NIGHT_START)
+            )
+        elif mode == MODE_SLEEP:
+            boundary = _parse_time(self.tune(CONF_NIGHT_END, DEFAULT_NIGHT_END))
+        else:
+            return None
+        now = dt_util.now()
+        local = now.replace(
+            hour=boundary.hour,
+            minute=boundary.minute,
+            second=boundary.second,
+            microsecond=0,
+        )
+        if local <= now:
+            local += timedelta(days=1)
+        return dt_util.as_utc(local)
 
     # ---- lifecycle ----
     async def async_setup_listeners(self) -> None:
@@ -221,6 +282,10 @@ class ClimadoCoordinator(DataUpdateCoordinator):
             hour=0, minute=0, second=0, microsecond=0
         )
         candidates = [next_at(night_start), next_at(night_end), midnight]
+        if self.manual_mode_until is not None:
+            override_end = dt_util.as_local(self.manual_mode_until)
+            if override_end > now:
+                candidates.append(override_end)
         blocks = plan.weekday if is_workday else plan.weekend
         for start, _end, tier_id in blocks:
             rate_start = next_at(start)
@@ -412,6 +477,12 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         self._schedule_boundary_refresh(
             now, night_start, night_end, plan, is_workday
         )
+        if (
+            self.manual_mode_until is not None
+            and dt_util.utcnow() >= self.manual_mode_until
+        ):
+            self.manual_mode = MODE_AUTO
+            self.manual_mode_until = None
 
         # Night away-latch (Nest/ecobee style): only allow Away overnight if the
         # house was already empty/away at the moment night began. Once anyone is
@@ -626,6 +697,9 @@ class ClimadoCoordinator(DataUpdateCoordinator):
             "vacation": self.vacation,
             "enabled": self.enabled,
             "manual_mode": self.manual_mode,
+            "manual_mode_until": self.manual_mode_until.isoformat()
+            if self.manual_mode_until
+            else None,
             "prearrival_active": self._prearrival_active(),
             "prearrival_until": self._prearrival_until.isoformat()
             if self._prearrival_until

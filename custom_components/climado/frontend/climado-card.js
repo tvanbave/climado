@@ -296,6 +296,7 @@ class ClimadoCard extends LitElement {
     const holdVal = a("manual_hold_value");
     const holdTemp = Array.isArray(holdVal) && holdVal[0] === "temp" ? numericValue(holdVal[1]) : null;
     const nextT = a("next_transition");
+    const overrideUntil = cleanValue(a("manual_override_until"));
     const unavailable = !effectiveReady;
     const off = eff === "disabled" || (enableReady && !enableOn);
     const dirty = this._dirty();
@@ -306,7 +307,10 @@ class ClimadoCard extends LitElement {
     const subtitle = unavailable
       ? "Waiting for Climado to report its state"
       : this._humanReason(reason);
-    const controlLabel = mode === "auto" ? "Auto control" : `Override: ${this._humanMode(mode)}`;
+    const timedOverride = overrideUntil && (mode === "home" || mode === "sleep");
+    const controlLabel = mode === "auto"
+      ? "Auto control"
+      : `Override: ${this._humanMode(mode)}${timedOverride ? ` until ${this._fmt(overrideUntil)}` : ""}`;
     const hvacInfo = this._hvacInfo(hvac);
 
     return html`
@@ -911,4 +915,4 @@ window.customCards.push({
   documentation: "https://github.com/tvanbave/climado",
 });
 
-console.info("%c CLIMADO-CARD %c 0.3.13 ", "background:#1565c0;color:#fff", "");
+console.info("%c CLIMADO-CARD %c 0.3.14 ", "background:#1565c0;color:#fff", "");
