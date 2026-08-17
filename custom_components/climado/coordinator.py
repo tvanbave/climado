@@ -1,8 +1,8 @@
 """Climado engine: presence -> mode -> setpoint resolution -> ecobee command.
 
 A single ``DataUpdateCoordinator`` evaluates the priority ladder on a 15-minute
-tick and on any presence/occupancy state change, then writes the resolved
-cooling setpoint to the underlying climate entity.
+fallback tick, at exact time boundaries, and on relevant state changes, then
+writes the resolved cooling setpoint to the underlying climate entity.
 
 Scalar settings (setpoints, timeouts, rate knobs, night window) are "tunables":
 they are exposed as number/time entities (entity_category=config) which own the
@@ -23,7 +23,10 @@ from datetime import datetime, time, timedelta
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import Event, HomeAssistant, callback
-from homeassistant.helpers.event import async_track_state_change_event
+from homeassistant.helpers.event import (
+    async_track_point_in_time,
+    async_track_state_change_event,
+)
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 
@@ -123,6 +126,7 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         self._manual_hold: tuple | None = None
         self._manual_hold_until: datetime | None = None
         self._unsub: list = []
+        self._boundary_unsub = None
         self._structural = {k: self.opt(k) for k in STRUCTURAL_KEYS}
 
     def structural_changed(self) -> bool:
@@ -156,6 +160,10 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         watch = list(self.opt(CONF_PRESENCE_ENTITIES, [])) + list(
             self.opt(CONF_OCCUPANCY_ENTITIES, [])
         )
+        workday = self.opt(CONF_WORKDAY_SENSOR)
+        if workday:
+            watch.append(workday)
+        watch = list(dict.fromkeys(watch))
         if watch:
             self._unsub.append(
                 async_track_state_change_event(
@@ -164,6 +172,7 @@ class ClimadoCoordinator(DataUpdateCoordinator):
             )
 
     async def async_unload(self) -> None:
+        self._cancel_boundary_refresh()
         for unsub in self._unsub:
             unsub()
         self._unsub.clear()
@@ -177,6 +186,55 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         if old is not None and new is not None and old.state == new.state:
             return
         self.hass.async_create_task(self.async_request_refresh())
+
+    @callback
+    def _handle_boundary(self, _now: datetime) -> None:
+        """Refresh when a time-dependent control boundary is reached."""
+        self._boundary_unsub = None
+        self.hass.async_create_task(self.async_request_refresh())
+
+    def _cancel_boundary_refresh(self) -> None:
+        if self._boundary_unsub is not None:
+            self._boundary_unsub()
+            self._boundary_unsub = None
+
+    def _schedule_boundary_refresh(
+        self,
+        now: datetime,
+        night_start: time,
+        night_end: time,
+        plan,
+        is_workday: bool,
+    ) -> None:
+        """Schedule the next rate, pre-cool, night, or profile boundary."""
+
+        def next_at(boundary: time) -> datetime:
+            candidate = now.replace(
+                hour=boundary.hour,
+                minute=boundary.minute,
+                second=boundary.second,
+                microsecond=0,
+            )
+            return candidate if candidate > now else candidate + timedelta(days=1)
+
+        midnight = (now + timedelta(days=1)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        candidates = [next_at(night_start), next_at(night_end), midnight]
+        blocks = plan.weekday if is_workday else plan.weekend
+        for start, _end, tier_id in blocks:
+            rate_start = next_at(start)
+            candidates.append(rate_start)
+            lead = plan.tiers[tier_id].precool_lead
+            precool_start = rate_start - timedelta(minutes=lead)
+            if lead and rate_start.date() == now.date() and precool_start > now:
+                candidates.append(precool_start)
+
+        self._cancel_boundary_refresh()
+        boundary = min(candidates)
+        self._boundary_unsub = async_track_point_in_time(
+            self.hass, self._handle_boundary, dt_util.as_utc(boundary)
+        )
 
     # ---- pre-arrival API ----
     def start_prearrival(self, lead_minutes=None, target=None, only_if_above=None, force=False) -> bool:
@@ -350,6 +408,10 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         night_end = _parse_time(self.tune(CONF_NIGHT_END, DEFAULT_NIGHT_END))
         is_night = _in_window(now.time(), night_start, night_end)
         is_workday = self._is_workday()
+        plan = self._plan()
+        self._schedule_boundary_refresh(
+            now, night_start, night_end, plan, is_workday
+        )
 
         # Night away-latch (Nest/ecobee style): only allow Away overnight if the
         # house was already empty/away at the moment night began. Once anyone is
@@ -410,7 +472,6 @@ class ClimadoCoordinator(DataUpdateCoordinator):
             elif self._manual_hold_until is not None and actual is not None:
                 self._manual_hold = actual  # user re-adjusted during the hold
 
-        plan = self._plan()
         tier = plan.tier_at(now, is_workday)
 
         if self.vacation or forced == MODE_VACATION:
