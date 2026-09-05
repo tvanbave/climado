@@ -96,6 +96,11 @@ class ClimadoSensor(CoordinatorEntity, SensorEntity):
         if self.entity_description.key == "effective_mode":
             return {
                 "applied_setpoint": data.get("applied"),
+                "command_pending": data.get("command_pending"),
+                "command_error": data.get("command_error"),
+                "thermostat_target": data.get("thermostat_target"),
+                "control_temperature": data.get("control_temperature"),
+                "thermostat_updated_at": data.get("thermostat_updated_at"),
                 "is_night": data.get("is_night"),
                 "night_away_allowed": data.get("night_away_allowed"),
                 "prearrival_active": data.get("prearrival_active"),

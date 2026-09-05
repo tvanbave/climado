@@ -312,6 +312,8 @@ class ClimadoCard extends LitElement {
       ? "Auto control"
       : `Override: ${this._humanMode(mode)}${timedOverride ? ` until ${this._fmt(overrideUntil)}` : ""}`;
     const hvacInfo = this._hvacInfo(hvac);
+    const commandPending = a("command_pending") === true;
+    const commandError = a("command_error");
 
     return html`
       <ha-card class="${off ? "off" : ""} ${unavailable ? "unavailable" : ""}">
@@ -322,6 +324,11 @@ class ClimadoCard extends LitElement {
               <span class="dot ${cooling ? "cool" : ""}"></span>${subtitle}
             </div>
             <div class="control-note">${controlLabel}</div>
+            ${commandError
+              ? html`<div class="control-note">Thermostat command failed; retrying</div>`
+              : commandPending
+                ? html`<div class="control-note">Waiting for thermostat confirmation</div>`
+                : ""}
           </div>
           <div class="temps">
             <div class="target">${this._temp(bigTemp)}</div>
@@ -509,7 +516,7 @@ class ClimadoCard extends LitElement {
     if (value === "fan") return { label: "Fan only", active: false };
     if (value === "idle") return { label: "Idle", active: false };
     if (value === "heating") return { label: "Heating", active: true };
-    return { label: value ? String(value).replace(/_/g, " ") : "Idle", active: false };
+    return { label: value ? String(value).replace(/_/g, " ") : "Unknown", active: false };
   }
 
   _nextText(next) {
@@ -915,4 +922,4 @@ window.customCards.push({
   documentation: "https://github.com/tvanbave/climado",
 });
 
-console.info("%c CLIMADO-CARD %c 0.3.14 ", "background:#1565c0;color:#fff", "");
+console.info("%c CLIMADO-CARD %c 0.3.15 ", "background:#1565c0;color:#fff", "");

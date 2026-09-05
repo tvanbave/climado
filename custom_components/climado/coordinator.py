@@ -18,6 +18,7 @@ Priority ladder (FR3):
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, time, timedelta
 
@@ -27,6 +28,7 @@ from homeassistant.helpers.event import (
     async_track_point_in_time,
     async_track_state_change_event,
 )
+from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 
@@ -84,6 +86,7 @@ _UNAVAILABLE = ("unknown", "unavailable", "", None)
 # Grace after our own write before external-change detection re-arms — covers
 # the ecobee integration's polling lag (state can trail a command by ~3 min).
 _MANUAL_GRACE = timedelta(minutes=5)
+_RETRY_DELAY = timedelta(minutes=1)
 
 
 def _parse_time(value) -> time:
@@ -117,19 +120,27 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         self.tunables: dict[str, object] = {}
         self._prearrival_until: datetime | None = None
         self._prearrival_target: float | None = None
-        self._last_present: datetime = dt_util.utcnow()
-        self._night_active: bool = False
+        self._absence_since: datetime | None = None
+        self._occupied: bool | None = None
+        self._night_window_start: datetime | None = None
         self._night_away_allowed: bool = False
         self._released: bool = True  # True once we've handed control back after a disable
         # Manual-hold respect: what we last commanded vs. what the thermostat
         # reports; a mismatch (outside the grace window) means a hand adjustment.
         self._last_commanded: tuple | None = None
         self._commanded_at: datetime | None = None
+        self._pending_command: tuple | None = None
+        self._retry_at: datetime | None = None
+        self._release_retry_at: datetime | None = None
+        self._command_error: str | None = None
         self._manual_hold: tuple | None = None
         self._manual_hold_until: datetime | None = None
         self._unsub: list = []
         self._boundary_unsub = None
         self._structural = {k: self.opt(k) for k in STRUCTURAL_KEYS}
+        self._store = Store(hass, 1, f"{DOMAIN}.{entry.entry_id}.runtime")
+        self._saved_runtime: dict | None = None
+        self._evaluation_lock = asyncio.Lock()
 
     def structural_changed(self) -> bool:
         """True if a structural (entity) option changed since last check."""
@@ -217,13 +228,47 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         return dt_util.as_utc(local)
 
     # ---- lifecycle ----
+    def _runtime_context(self) -> dict:
+        return {
+            key: self.opt(key)
+            for key in (CONF_CLIMATE_ENTITY, CONF_PRESENCE_ENTITIES, CONF_OCCUPANCY_ENTITIES)
+        }
+
+    async def async_restore_runtime(self) -> None:
+        """Restore departure timing and this night's latch before evaluating."""
+        saved = await self._store.async_load()
+        if not saved or saved.get("context") != self._runtime_context():
+            return
+        self._occupied = saved.get("occupied")
+        for key in ("absence_since", "night_window_start"):
+            raw = saved.get(key)
+            value = dt_util.parse_datetime(raw) if isinstance(raw, str) else None
+            setattr(self, f"_{key}", dt_util.as_utc(value) if value else None)
+        self._night_away_allowed = saved.get("night_away_allowed", False)
+        self._saved_runtime = saved
+
+    def _runtime_data(self) -> dict:
+        return {
+            "context": self._runtime_context(),
+            "occupied": self._occupied,
+            "absence_since": self._absence_since.isoformat() if self._absence_since else None,
+            "night_window_start": self._night_window_start.isoformat() if self._night_window_start else None,
+            "night_away_allowed": self._night_away_allowed,
+        }
+
+    def _save_runtime(self) -> None:
+        data = self._runtime_data()
+        if data != self._saved_runtime:
+            self._saved_runtime = data
+            self._store.async_delay_save(self._runtime_data, 1)
+
     async def async_setup_listeners(self) -> None:
         watch = list(self.opt(CONF_PRESENCE_ENTITIES, [])) + list(
             self.opt(CONF_OCCUPANCY_ENTITIES, [])
         )
-        workday = self.opt(CONF_WORKDAY_SENSOR)
-        if workday:
-            watch.append(workday)
+        for key in (CONF_WORKDAY_SENSOR, CONF_CLIMATE_ENTITY, CONF_MAIN_TEMP_SENSOR, CONF_BEDROOM_TEMP_SENSOR):
+            if entity_id := self.opt(key):
+                watch.append(entity_id)
         watch = list(dict.fromkeys(watch))
         if watch:
             self._unsub.append(
@@ -237,22 +282,28 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         for unsub in self._unsub:
             unsub()
         self._unsub.clear()
+        await self._store.async_save(self._runtime_data())
 
     @callback
     def _handle_sensor_event(self, event: Event) -> None:
         old = event.data.get("old_state")
         new = event.data.get("new_state")
-        # Ignore attribute-only churn (e.g. phone GPS coordinate updates) —
-        # only an actual state-value change can affect presence/occupancy.
         if old is not None and new is not None and old.state == new.state:
-            return
+            if event.data.get("entity_id") != self.opt(CONF_CLIMATE_ENTITY):
+                return
+            relevant = ("temperature", "preset_mode", "hvac_action", "current_temperature", "active_sensors")
+            if all(old.attributes.get(k) == new.attributes.get(k) for k in relevant):
+                return
+        # Capture departure at the event, before the coordinator's debounce.
+        self._update_presence()
+        self._save_runtime()
         self.hass.async_create_task(self.async_request_refresh())
 
     @callback
     def _handle_boundary(self, _now: datetime) -> None:
         """Refresh when a time-dependent control boundary is reached."""
         self._boundary_unsub = None
-        self.hass.async_create_task(self.async_request_refresh())
+        self.hass.async_create_task(self.async_refresh())
 
     def _cancel_boundary_refresh(self) -> None:
         if self._boundary_unsub is not None:
@@ -282,6 +333,12 @@ class ClimadoCoordinator(DataUpdateCoordinator):
             hour=0, minute=0, second=0, microsecond=0
         )
         candidates = [next_at(night_start), next_at(night_end), midnight]
+        deadlines = [self._prearrival_until, self._manual_hold_until, self._retry_at, self._release_retry_at]
+        if self._absence_since is not None:
+            deadlines.append(self._absence_since + timedelta(minutes=int(self.tune(CONF_AWAY_DELAY, DEFAULT_AWAY_DELAY))))
+        for deadline in deadlines:
+            if deadline is not None and deadline > dt_util.as_utc(now):
+                candidates.append(dt_util.as_local(deadline))
         if self.manual_mode_until is not None:
             override_end = dt_util.as_local(self.manual_mode_until)
             if override_end > now:
@@ -336,16 +393,31 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         except (ValueError, TypeError):
             return None
 
-    def _is_occupied(self) -> bool:
+    def _is_occupied(self) -> bool | None:
+        unknown = False
         for ent in self.opt(CONF_PRESENCE_ENTITIES, []):
             state = self.hass.states.get(ent)
             if state and state.state == "home":
                 return True
+            unknown |= state is None or state.state in _UNAVAILABLE
         for ent in self.opt(CONF_OCCUPANCY_ENTITIES, []):
             state = self.hass.states.get(ent)
             if state and state.state == "on":
                 return True
-        return False
+            unknown |= state is None or state.state in _UNAVAILABLE
+        return None if unknown else False
+
+    def _update_presence(self) -> bool:
+        occupied = self._is_occupied()
+        if occupied is not None:
+            if occupied:
+                self._absence_since = None
+                self._night_away_allowed = False
+            elif self._occupied is not False or self._absence_since is None:
+                self._absence_since = dt_util.utcnow()
+            self._occupied = occupied
+        # Do not infer a departure from entities still loading at startup.
+        return self._occupied is not False
 
     def _is_workday(self) -> bool:
         ent = self.opt(CONF_WORKDAY_SENSOR)
@@ -357,7 +429,7 @@ class ClimadoCoordinator(DataUpdateCoordinator):
 
     def _away_elapsed(self) -> bool:
         delay = int(self.tune(CONF_AWAY_DELAY, DEFAULT_AWAY_DELAY))
-        return (dt_util.utcnow() - self._last_present) >= timedelta(minutes=delay)
+        return self._absence_since is not None and (dt_util.utcnow() - self._absence_since) >= timedelta(minutes=delay)
 
     # ---- manual-hold respect ----
     def clear_manual_hold(self) -> None:
@@ -373,6 +445,9 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         self._manual_hold = None
         self._manual_hold_until = None
         self._last_commanded = None
+        self._pending_command = None
+        self._retry_at = None
+        self._command_error = None
 
     def _thermostat_actual(self) -> tuple | None:
         """The thermostat's current commanded state as ("preset", p) / ("temp", t)."""
@@ -380,7 +455,7 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         if state is None or state.state in _UNAVAILABLE:
             return None
         preset = state.attributes.get("preset_mode")
-        if preset and preset != "temp":
+        if preset and preset not in ("temp", "none"):
             return ("preset", preset)
         temp = state.attributes.get("temperature")
         try:
@@ -389,9 +464,12 @@ class ClimadoCoordinator(DataUpdateCoordinator):
             return None
 
     def _matches_command(self, actual: tuple | None) -> bool:
-        cmd = self._last_commanded
+        return self._commands_match(self._last_commanded, actual)
+
+    @staticmethod
+    def _commands_match(cmd: tuple | None, actual: tuple | None) -> bool:
         if cmd is None or actual is None:
-            return True  # nothing to compare against
+            return False
         if cmd[0] != actual[0]:
             return False
         if cmd[0] == "preset":
@@ -410,7 +488,7 @@ class ClimadoCoordinator(DataUpdateCoordinator):
 
     def _climate_attr(self, key):
         state = self.hass.states.get(self.opt(CONF_CLIMATE_ENTITY))
-        return state.attributes.get(key) if state else None
+        return state.attributes.get(key) if state and state.state not in _UNAVAILABLE else None
 
     def _next_transition(self, now, night_start, night_end, is_night, plan, is_workday):
         """Soonest upcoming mode/rate change, as {at (UTC iso), label} for the card."""
@@ -437,9 +515,10 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         return {"at": dt_util.as_utc(when).isoformat(), "label": label}
 
     def _record_command(self, command: tuple, wrote: bool) -> None:
-        self._last_commanded = command
         if wrote:
+            self._pending_command = command
             self._commanded_at = dt_util.utcnow()
+            self._retry_at = self._commanded_at + _MANUAL_GRACE
             # Only branches that outrank a manual hold can write while one is
             # active (away/vacation/pre-arrival/forced). Once the engine has
             # overwritten the thermostat, the hand adjustment is moot — drop it
@@ -447,6 +526,37 @@ class ClimadoCoordinator(DataUpdateCoordinator):
             # clear_manual_hold(): that would null the baseline we just set.)
             self._manual_hold = None
             self._manual_hold_until = None
+        else:
+            self._last_commanded = command
+            self._pending_command = None
+            self._retry_at = None
+        self._command_error = None
+
+    def _confirm_pending(self) -> None:
+        if self._pending_command and self._commands_match(self._pending_command, self._thermostat_actual()):
+            self._record_command(self._pending_command, wrote=False)
+
+    async def _send_command(self, command: tuple) -> bool:
+        """Wait for the service, then require a matching reported state."""
+        if command == self._pending_command and self._retry_at and dt_util.utcnow() < self._retry_at:
+            return False
+        service = "set_temperature" if command[0] == "temp" else "set_preset_mode"
+        key = "temperature" if command[0] == "temp" else "preset_mode"
+        self._pending_command = command
+        try:
+            await self.hass.services.async_call(
+                "climate", service,
+                {"entity_id": self.opt(CONF_CLIMATE_ENTITY), key: command[1]},
+                blocking=True,
+            )
+        except Exception as err:  # noqa: BLE001
+            self._command_error = str(err) or type(err).__name__
+            self._retry_at = dt_util.utcnow() + _RETRY_DELAY
+            _LOGGER.error("Climado command %s failed: %s", command, err)
+            return False
+        self._record_command(command, wrote=True)
+        self._confirm_pending()
+        return self._pending_command is None
 
     def _plan(self):
         coast = float(self.tune(CONF_ONPEAK_COAST, DEFAULT_ONPEAK_COAST))
@@ -464,19 +574,28 @@ class ClimadoCoordinator(DataUpdateCoordinator):
 
     # ---- core evaluation ----
     async def _async_update_data(self) -> dict:
+        # Boundary and entity refreshes may overlap while a service is running.
+        async with self._evaluation_lock:
+            try:
+                return await self._evaluate()
+            finally:
+                self._save_runtime()
+                self._schedule_boundary_refresh(
+                    dt_util.now(),
+                    _parse_time(self.tune(CONF_NIGHT_START, DEFAULT_NIGHT_START)),
+                    _parse_time(self.tune(CONF_NIGHT_END, DEFAULT_NIGHT_END)),
+                    self._plan(), self._is_workday(),
+                )
+
+    async def _evaluate(self) -> dict:
         now = dt_util.now()
-        occupied = self._is_occupied()
-        if occupied:
-            self._last_present = dt_util.utcnow()
+        occupied = self._update_presence()
 
         night_start = _parse_time(self.tune(CONF_NIGHT_START, DEFAULT_NIGHT_START))
         night_end = _parse_time(self.tune(CONF_NIGHT_END, DEFAULT_NIGHT_END))
         is_night = _in_window(now.time(), night_start, night_end)
         is_workday = self._is_workday()
         plan = self._plan()
-        self._schedule_boundary_refresh(
-            now, night_start, night_end, plan, is_workday
-        )
         if (
             self.manual_mode_until is not None
             and dt_util.utcnow() >= self.manual_mode_until
@@ -487,26 +606,34 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         # Night away-latch (Nest/ecobee style): only allow Away overnight if the
         # house was already empty/away at the moment night began. Once anyone is
         # present during the night, latch it off for the rest of the night.
-        if is_night and not self._night_active:
-            self._night_away_allowed = (not occupied) and self._away_elapsed()
-        self._night_active = is_night
+        window_start = now.replace(hour=night_start.hour, minute=night_start.minute, second=night_start.second, microsecond=0)
+        if window_start > now:
+            window_start -= timedelta(days=1)
+        window_start = dt_util.as_utc(window_start) if is_night else None
+        if window_start != self._night_window_start:
+            self._night_window_start = window_start
+            delay = timedelta(minutes=int(self.tune(CONF_AWAY_DELAY, DEFAULT_AWAY_DELAY)))
+            self._night_away_allowed = bool(
+                is_night and not occupied and self._absence_since
+                and self._absence_since + delay <= window_start
+            )
         if is_night and occupied:
             self._night_away_allowed = False
 
-        if self._prearrival_active() and occupied:
+        if self._prearrival_until and (not self._prearrival_active() or occupied):
             self.clear_prearrival()
 
         if not self.enabled:
             # Hand the thermostat cleanly back to its native schedule (once per
             # disable): otherwise our last hold persists ("until you change it")
             # and silently blocks the ecobee's own comfort schedule.
-            if not self._released:
-                self._released = True
+            if not self._released and (self._release_retry_at is None or dt_util.utcnow() >= self._release_retry_at):
                 self.clear_manual_hold()
                 self._last_commanded = None  # fresh baseline when re-enabled
-                await self._release_control()
+                self._released = await self._release_control()
             return self._state(MODE_DISABLED, "disabled", None, None, occupied, is_night)
         self._released = False
+        self._release_retry_at = None
 
         comfort_home = float(self.tune(CONF_COMFORT_HOME, DEFAULT_COMFORT_HOME))
         away_temp = float(self.tune(CONF_AWAY_TEMP, DEFAULT_AWAY_TEMP))
@@ -520,10 +647,11 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         # ecobee's "hold until next transition". Explicit select choices,
         # Resume, vacation/away/pre-arrival all supersede it.
         actual = self._thermostat_actual()
+        self._confirm_pending()
         if self._manual_hold_until and dt_util.utcnow() >= self._manual_hold_until:
             self.clear_manual_hold()
         if forced is None and not self.vacation:
-            grace_over = self._last_commanded is not None and (
+            grace_over = self._pending_command is None and self._last_commanded is not None and (
                 self._commanded_at is None
                 or dt_util.utcnow() - self._commanded_at > _MANUAL_GRACE
             )
@@ -590,6 +718,10 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         state["main_temp"] = self._get_float(self.opt(CONF_MAIN_TEMP_SENSOR))
         state["bedroom_temp"] = self._get_float(self.opt(CONF_BEDROOM_TEMP_SENSOR))
         state["hvac_action"] = self._climate_attr("hvac_action")
+        state["thermostat_target"] = self._climate_attr("temperature")
+        state["control_temperature"] = self._climate_attr("current_temperature")
+        climate = self.hass.states.get(self.opt(CONF_CLIMATE_ENTITY))
+        state["thermostat_updated_at"] = climate.last_updated.isoformat() if climate else None
         # Which sensor the thermostat is regulating right now (bedroom during the
         # ecobee Sleep handoff, else the main-floor thermostat sensor).
         state["regulating"] = "bedroom" if mode == MODE_SLEEP else "main"
@@ -615,21 +747,11 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         value = min(dmax, max(dmin, float(target)))
         value = round(value / step) * step
         current = state.attributes.get("temperature")
-        if current is not None and abs(float(current) - value) < (step / 2):
+        command = ("temp", value)
+        if self._commands_match(command, self._thermostat_actual()) and self._pending_command in (None, command):
             self._record_command(("temp", value), wrote=False)
-            return value
-        try:
-            await self.hass.services.async_call(
-                "climate", "set_temperature",
-                {"entity_id": ent, "temperature": value},
-                blocking=False,
-            )
-        except Exception as err:  # noqa: BLE001
-            _LOGGER.error("Climado: failed to set %s -> %.1f: %s", ent, value, err)
-            return None
-        self._record_command(("temp", value), wrote=True)
-        _LOGGER.debug("Climado set %s -> %.1f", ent, value)
-        return value
+            return current
+        return self._climate_attr("temperature") if await self._send_command(command) else None
 
     async def _release_control(self):
         """Cancel our hold so the thermostat's native schedule resumes."""
@@ -640,16 +762,21 @@ class ClimadoCoordinator(DataUpdateCoordinator):
                     "ecobee",
                     "resume_program",
                     {"entity_id": ent, "resume_all": True},
-                    blocking=False,
+                    blocking=True,
                 )
                 _LOGGER.info("Climado disabled: resumed %s native program", ent)
-                return
+                self._release_retry_at = None
+                return True
             except Exception as err:  # noqa: BLE001
                 _LOGGER.error("Climado: failed to resume program on %s: %s", ent, err)
+                self._command_error = str(err) or type(err).__name__
+                self._release_retry_at = dt_util.utcnow() + _RETRY_DELAY
+                return False
         else:
             _LOGGER.info(
                 "Climado disabled: no resume service for %s; last hold remains", ent
             )
+        return True
 
     async def _apply_preset(self, preset):
         """Hand control to an ecobee comfort setting (Sleep -> Bedroom sensor).
@@ -665,22 +792,11 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         if state.state != "cool":
             _LOGGER.debug("Climado: %s not in cool mode (%s); skipping", ent, state.state)
             return None
-        if state.attributes.get("preset_mode") == preset:
+        command = ("preset", preset)
+        if state.attributes.get("preset_mode") == preset and self._pending_command in (None, command):
             self._record_command(("preset", preset), wrote=False)
             return state.attributes.get("temperature")  # already active; avoid churn
-        try:
-            await self.hass.services.async_call(
-                "climate",
-                "set_preset_mode",
-                {"entity_id": ent, "preset_mode": preset},
-                blocking=False,
-            )
-        except Exception as err:  # noqa: BLE001
-            _LOGGER.error("Climado: failed to set %s preset -> %s: %s", ent, preset, err)
-            return None
-        self._record_command(("preset", preset), wrote=True)
-        _LOGGER.debug("Climado set %s preset -> %s", ent, preset)
-        return state.attributes.get("temperature")
+        return self._climate_attr("temperature") if await self._send_command(command) else None
 
     def _state(self, mode, reason, target, tier, occupied, is_night, applied=None, rate_plan=None) -> dict:
         return {
@@ -688,6 +804,8 @@ class ClimadoCoordinator(DataUpdateCoordinator):
             "reason": reason,
             "target": target,
             "applied": applied,
+            "command_pending": self._pending_command is not None,
+            "command_error": self._command_error,
             "tier": tier.name if tier is not None else None,
             "tier_id": tier.tier_id if tier is not None else None,
             "rate_plan": rate_plan,

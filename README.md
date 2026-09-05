@@ -14,7 +14,7 @@ setting, with everything configurable from the UI (no YAML).
   allowed overnight if the house was already empty at the night boundary).
 - **Configurable TOU/ULO rate engine** — pre‑cool before the expensive period and
   coast through it. Ships the **Ontario ULO** layout; the weekly schedule is
-  editable from the card, and on‑peak coast / pre‑cool are tunable.
+  shown read-only on the card by default, and on‑peak coast / pre‑cool are tunable.
 - **Native night handoff** — at the night window start, Climado activates the
   ecobee's own **Sleep comfort setting** (a true closed loop on your bedroom
   sensor that reaches target and cycles off). The overnight temperature is the
@@ -70,6 +70,24 @@ the hold. Detection only arms in `auto` mode. A manual **Home** selection lasts
 until the next night start, while **Sleep** lasts until the next night end;
 Away and Vacation remain persistent until changed.
 
+### Reliability and status
+Departure timing and the current overnight Away decision survive restarts.
+Away delay starts when the last configured presence/occupancy source leaves;
+Away and pre-arrival expiry use scheduled deadlines.
+
+Climado waits for thermostat commands to be confirmed by reported state. Service
+errors retry after one minute; commands still unconfirmed after five minutes
+are retried without becoming false manual holds. Manual-change detection is
+paused while a command is pending, and for five minutes after a successful
+service call to accommodate delayed thermostat reports.
+
+The card refreshes when Home Assistant receives thermostat/temperature changes
+and shows pending or retrying commands. Ecobee's own polling and sensor handoff
+delays still apply. The effective-mode sensor also exposes `thermostat_target`,
+`control_temperature`, `thermostat_updated_at`, `command_pending`, and
+`command_error` for diagnostics. A pending Sleep target remains blank until
+Ecobee reports the Sleep preset, rather than displaying the previous target.
+
 ## Entities created
 - `select.*_mode` — override (`auto`/`home`/`away`/`sleep`/`vacation`). Home and
   Sleep return to Auto at their next day/night boundary.
@@ -91,7 +109,7 @@ Pre‑cool lead 90 min / depth 2.0 → 21.5 pre‑cool / 25.5 on‑peak coast on
 An Alarmo-style card: effective mode + reason, target vs. current temp, rate-tier
 and presence chips, mode buttons (auto/home/away/sleep/vacation), enable +
 vacation toggles, a **Heading home** pre-cool button, and a **TOU-style colored
-weekly rate grid** (weekday + weekend/holiday) you can tap to recolor hours.
+rate timeline** that automatically shows weekday or weekend/holiday rates.
 
 The card **ships with the integration and auto-loads** (served at
 `/climado_static/climado-card.js`) — no `www` copy or resource entry needed. Just
@@ -103,12 +121,15 @@ climate: climate.main_floor              # optional, shows current room temp
 ```
 (If "Custom element doesn't exist" shows right after updating, hard-refresh the browser.)
 
-The **grid is fully editable**: tap hours to change tier, then **Save rate plan**
+For advanced custom schedules, enable `rate_editor: true`. Both schedules become
+editable: tap hours to change tier, then **Save rate plan**
 persists it via `climado.set_rate_plan` (weekday + weekend/holiday schedules). The
 card reads the live plan back from the rate-tier sensor, and **Reset** reverts to
 the saved plan. On-peak coast and pre-cool lead/depth remain device number entities.
 
 ## Roadmap
+- Reliability first: regression tests and command/status diagnostics are included
+  in 0.3.15. See [CHANGELOG.md](CHANGELOG.md) for the release details.
 - **M2 [done]** Editable rate-plan schedules persisted via `climado.set_rate_plan`
   (arbitrary hour→tier over the 4 standard tiers). Future: custom tiers/ranks, TOU preset.
 - **M3** Bespoke Lovelace panel incl. a TOU‑style colored rate grid editor.
@@ -123,3 +144,17 @@ With the integration loaded:
   thermostat's displayed temperature tracks the **bedroom** sensor (if occupied
   at the boundary it must not go `away` overnight).
 - Press **Heading home** and confirm `pre_arrival` engages and expires on arrival.
+
+## Development checks
+Use Python 3.14 for the current Home Assistant test runtime:
+
+```sh
+python -m pip install -r requirements-test.txt
+python -m pytest -q
+ruff check --select E9,F63,F7,F82 custom_components tests
+node --input-type=module --check < custom_components/climado/frontend/climado-card.js
+node --test tests/card.test.mjs
+```
+
+The tests use Home Assistant's state machine, storage and coordinator with
+simulated thermostat responses; they never control a live device.

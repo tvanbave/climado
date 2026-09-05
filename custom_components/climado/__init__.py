@@ -51,10 +51,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     coordinator = ClimadoCoordinator(hass, entry)
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
 
-    await coordinator.async_setup_listeners()
     # Forward platforms first so the number/time config entities load and
     # restore their values into coordinator.tunables before the first evaluate.
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    await coordinator.async_restore_runtime()
+    await coordinator.async_setup_listeners()
     await coordinator.async_config_entry_first_refresh()
 
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
