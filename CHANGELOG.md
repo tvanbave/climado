@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.3.16
+
+- Add a Windows open switch to the Climado card. It pauses heating/cooling
+  without changing fan settings or the Climado control switch.
+- Remember the previous HVAC mode across restarts and restore it when Windows
+  open is switched off, including Ecobee furnace-only selection. A thermostat
+  that was already off stays off.
+- Keep temperatures and the current electricity rate visible while paused.
+  Scheduled modes, Resume and Heading home cannot cancel the window pause.
+- Confirm thermostat commands from reported state, retry failures, and handle
+  delayed acknowledgements when the toggle is changed quickly.
+
+This is an explicit manual pause with no automatic timeout or temperature
+override. The fall heating and automatic fuel-selection work is not included.
+Restart Home Assistant after updating and refresh the dashboard for the new card.
+
 ## 0.3.15
 
 - Retry failed thermostat commands without treating them as manual holds. Wait

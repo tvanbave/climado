@@ -141,6 +141,7 @@ class ClimadoCard extends LitElement {
       else if (id.includes("presence")) found.presence = id;
       else if (id.includes("climado_control")) found.enable = id;
       else if (id.startsWith("switch.") && id.includes("vacation")) found.vacation = id;
+      else if (id.startsWith("switch.") && id.includes("windows_open")) found.windows = id;
       else if (id.startsWith("button.") && id.includes("heading_home")) found.prearrival = id;
       else if (id.startsWith("button.") && id.includes("resume")) found.resume = id;
     }
@@ -286,7 +287,9 @@ class ClimadoCard extends LitElement {
     const regulating = cleanValue(a("regulating"));
     const enableReady = this._available(e.enable);
     const vacationReady = this._available(e.vacation);
-    const prearrivalReady = this._callable(e.prearrival);
+    const prearrivalReady = this._callable(e.prearrival) && eff !== "windows_open";
+    const windowsReady = this._available(e.windows);
+    const windowsOn = windowsReady && this._state(e.windows)?.state === "on";
     const resumeReady = this._callable(e.resume);
     const enableOn = enableReady && this._state(e.enable)?.state === "on";
     const vacOn = vacationReady && this._state(e.vacation)?.state === "on";
@@ -312,8 +315,8 @@ class ClimadoCard extends LitElement {
       ? "Auto control"
       : `Override: ${this._humanMode(mode)}${timedOverride ? ` until ${this._fmt(overrideUntil)}` : ""}`;
     const hvacInfo = this._hvacInfo(hvac);
-    const commandPending = a("command_pending") === true;
-    const commandError = a("command_error");
+    const commandPending = a("command_pending") === true || a("windows_pending") === true;
+    const commandError = a("command_error") || a("windows_error");
 
     return html`
       <ha-card class="${off ? "off" : ""} ${unavailable ? "unavailable" : ""}">
@@ -387,6 +390,15 @@ class ClimadoCard extends LitElement {
         </div>
 
         <div class="row">
+          ${e.windows ? html`<label class="tgl">
+            <ha-switch
+              aria-label="Windows open"
+              .checked=${windowsOn}
+              .disabled=${!windowsReady}
+              @change=${() => this._toggle(e.windows)}
+            ></ha-switch>
+            Windows open
+          </label>` : ""}
           <label class="tgl">
             <ha-switch
               .checked=${enableOn}
@@ -483,6 +495,7 @@ class ClimadoCard extends LitElement {
         vacation: "Vacation",
         disabled: "Off",
         unavailable: "Unavailable",
+        windows_open: "Windows open",
       }[m] || (m || "").replace(/_/g, " ")
     );
   }
@@ -491,6 +504,8 @@ class ClimadoCard extends LitElement {
     if (!reason) return "Waiting for Climado to report its state";
     const map = {
       vacation: "Vacation setback",
+      windows_open: "Heating and cooling paused; fan unchanged",
+      windows_restoring: "Restoring thermostat mode",
       manual_away: "Away (manual)",
       away: "Away — nobody home",
       pre_arrival: "Pre-cooling for your arrival",
@@ -922,4 +937,4 @@ window.customCards.push({
   documentation: "https://github.com/tvanbave/climado",
 });
 
-console.info("%c CLIMADO-CARD %c 0.3.15 ", "background:#1565c0;color:#fff", "");
+console.info("%c CLIMADO-CARD %c 0.3.16 ", "background:#1565c0;color:#fff", "");

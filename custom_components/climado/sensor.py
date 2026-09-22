@@ -95,6 +95,10 @@ class ClimadoSensor(CoordinatorEntity, SensorEntity):
         data = self.coordinator.data or {}
         if self.entity_description.key == "effective_mode":
             return {
+                "windows_open": data.get("windows_open"),
+                "windows_restoring": data.get("windows_restoring"),
+                "windows_pending": data.get("windows_pending"),
+                "windows_error": data.get("windows_error"),
                 "applied_setpoint": data.get("applied"),
                 "command_pending": data.get("command_pending"),
                 "command_error": data.get("command_error"),

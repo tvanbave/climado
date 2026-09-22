@@ -78,6 +78,7 @@ from .const import (
     MODE_VACATION,
 )
 from .rate import default_ulo_plan, plan_from_schedule, plan_to_dict, rate_offset
+from .windows import WindowsPause
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -141,6 +142,7 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         self._store = Store(hass, 1, f"{DOMAIN}.{entry.entry_id}.runtime")
         self._saved_runtime: dict | None = None
         self._evaluation_lock = asyncio.Lock()
+        self.windows = WindowsPause(hass, self.opt(CONF_CLIMATE_ENTITY), entry.entry_id)
 
     def structural_changed(self) -> bool:
         """True if a structural (entity) option changed since last check."""
@@ -236,6 +238,7 @@ class ClimadoCoordinator(DataUpdateCoordinator):
 
     async def async_restore_runtime(self) -> None:
         """Restore departure timing and this night's latch before evaluating."""
+        await self.windows.async_load()
         saved = await self._store.async_load()
         if not saved or saved.get("context") != self._runtime_context():
             return
@@ -333,7 +336,7 @@ class ClimadoCoordinator(DataUpdateCoordinator):
             hour=0, minute=0, second=0, microsecond=0
         )
         candidates = [next_at(night_start), next_at(night_end), midnight]
-        deadlines = [self._prearrival_until, self._manual_hold_until, self._retry_at, self._release_retry_at]
+        deadlines = [self._prearrival_until, self._manual_hold_until, self._retry_at, self._release_retry_at, self.windows.retry_at]
         if self._absence_since is not None:
             deadlines.append(self._absence_since + timedelta(minutes=int(self.tune(CONF_AWAY_DELAY, DEFAULT_AWAY_DELAY))))
         for deadline in deadlines:
@@ -360,6 +363,8 @@ class ClimadoCoordinator(DataUpdateCoordinator):
 
     # ---- pre-arrival API ----
     def start_prearrival(self, lead_minutes=None, target=None, only_if_above=None, force=False) -> bool:
+        if self.windows.busy:
+            return False
         lead = int(lead_minutes if lead_minutes is not None else self.tune(CONF_PREARRIVAL_LEAD, DEFAULT_PREARRIVAL_LEAD))
         tgt = float(target if target is not None else self.tune(CONF_PREARRIVAL_TARGET, DEFAULT_PREARRIVAL_TARGET))
         threshold = only_if_above if only_if_above is not None else self.tune(CONF_PREARRIVAL_ONLY_IF_ABOVE, DEFAULT_PREARRIVAL_ONLY_IF_ABOVE)
@@ -573,6 +578,13 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         return default_ulo_plan(coast, lead, depth)
 
     # ---- core evaluation ----
+    async def async_set_windows_open(self, active):
+        async with self._evaluation_lock:
+            await self.windows.async_set_active(active)
+            self.clear_prearrival()
+            self.clear_manual_hold()
+        await self.async_refresh()
+
     async def _async_update_data(self) -> dict:
         # Boundary and entity refreshes may overlap while a service is running.
         async with self._evaluation_lock:
@@ -622,6 +634,15 @@ class ClimadoCoordinator(DataUpdateCoordinator):
 
         if self._prearrival_until and (not self._prearrival_active() or occupied):
             self.clear_prearrival()
+
+        if self.windows.busy:
+            restore = self.windows.restore
+            released = restore.get("released", True) if restore else self._released
+            if await self.windows.async_step(released):
+                self.clear_prearrival()
+                self.clear_manual_hold()
+                return self._state("windows_open", "windows_open" if self.windows.active else "windows_restoring", None, plan.tier_at(now, is_workday), occupied, is_night, rate_plan=plan_to_dict(plan))
+            self._released = released
 
         if not self.enabled:
             # Hand the thermostat cleanly back to its native schedule (once per
@@ -800,7 +821,18 @@ class ClimadoCoordinator(DataUpdateCoordinator):
 
     def _state(self, mode, reason, target, tier, occupied, is_night, applied=None, rate_plan=None) -> dict:
         return {
+            "hvac_action": self._climate_attr("hvac_action"),
+            "thermostat_target": self._climate_attr("temperature"),
+            "control_temperature": self._climate_attr("current_temperature"),
+            "main_temp": self._get_float(self.opt(CONF_MAIN_TEMP_SENSOR)),
+            "bedroom_temp": self._get_float(self.opt(CONF_BEDROOM_TEMP_SENSOR)),
+            "is_workday": self._is_workday(),
+            "rate_profile": "weekday" if self._is_workday() else "weekend",
             "mode": mode,
+            "windows_open": self.windows.active,
+            "windows_restoring": not self.windows.active and self.windows.restore is not None,
+            "windows_error": self.windows.error,
+            "windows_pending": self.windows.retry_at is not None,
             "reason": reason,
             "target": target,
             "applied": applied,

@@ -21,6 +21,7 @@ async def async_setup_entry(
         [
             ClimadoEnableSwitch(coordinator, entry),
             ClimadoVacationSwitch(coordinator, entry),
+            ClimadoWindowsSwitch(coordinator, entry),
         ]
     )
 
@@ -91,3 +92,25 @@ class ClimadoVacationSwitch(_BaseSwitch):
         await super().async_added_to_hass()
         last = await self.async_get_last_state()
         self.coordinator.vacation = last is not None and last.state == "on"
+
+
+class ClimadoWindowsSwitch(_BaseSwitch):
+    """Pause HVAC without changing fan settings or the master enable switch."""
+
+    _attr_name = "Windows open"
+    _attr_icon = "mdi:window-open-variant"
+
+    def __init__(self, coordinator, entry):
+        super().__init__(coordinator, entry, "windows_open")
+
+    @property
+    def is_on(self):
+        return self.coordinator.windows.active
+
+    async def async_turn_on(self, **kwargs):
+        await self.coordinator.async_set_windows_open(True)
+        self.async_write_ha_state()
+
+    async def async_turn_off(self, **kwargs):
+        await self.coordinator.async_set_windows_open(False)
+        self.async_write_ha_state()

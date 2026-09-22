@@ -56,3 +56,18 @@ test("missing equipment state is not represented as idle", () => {
   assert.equal(item._hvacInfo(undefined).label, "Unknown");
   assert.equal(item._hvacInfo("idle").label, "Idle");
 });
+
+test("Windows open switch is discovered and shown with paused status", () => {
+  const item = card({ windows_open: true, hvac_action: "fan" });
+  item.hass.states["switch.climado_windows_open"] = { state: "on", attributes: {} };
+  item.hass.entities["switch.climado_windows_open"] = { device_id: "test" };
+  item.hass.states["sensor.climado_effective_mode"].state = "windows_open";
+  item.hass.states["sensor.climado_control_reason"].state = "windows_open";
+  assert.equal(item._entities().windows, "switch.climado_windows_open");
+  assert.match(item.render(), /aria-label="Windows open"/);
+  assert.match(item.render(), /Heating and cooling paused; fan unchanged/);
+});
+
+test("older installs do not show a nonfunctional window toggle", () => {
+  assert.doesNotMatch(card({}).render(), /aria-label="Windows open"/);
+});

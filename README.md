@@ -137,6 +137,22 @@ the saved plan. On-peak coast and pre-cool lead/depth remain device number entit
   pre‑arrival; heating season.
 
 ## Verifying after deploy
+### Windows open
+
+Turn **Windows open** on in the card to pause heating and cooling while leaving
+fan mode and minimum fan runtime unchanged. The pause survives Home Assistant
+restarts and scheduled mode changes. Turn it off to restore the previous HVAC
+mode and resume Climado's existing control behavior. A thermostat that was
+already off stays off; Ecobee furnace-only selection is also preserved.
+
+This is a manual pause, with no automatic timeout or temperature override.
+Resume, Home and Sleep do not cancel it; close the Windows open toggle explicitly.
+Current temperatures and electricity rate remain visible, along with status
+for pending or failed thermostat commands. Update through HACS, restart Home
+Assistant and refresh the dashboard. No thermostat changes occur merely from
+installing the feature. Fall heating controls are not part of v0.3.16.
+
+### Existing controls
 With the integration loaded:
 - Toggle a presence/occupancy sensor and watch `sensor.*_effective_mode` /
   `*_control_reason` and the thermostat setpoint react (away only after the delay).
