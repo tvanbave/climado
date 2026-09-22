@@ -937,4 +937,4 @@ window.customCards.push({
   documentation: "https://github.com/tvanbave/climado",
 });
 
-console.info("%c CLIMADO-CARD %c 0.3.16 ", "background:#1565c0;color:#fff", "");
+console.info("%c CLIMADO-CARD %c 0.3.17 ", "background:#1565c0;color:#fff", "");

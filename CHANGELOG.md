@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.17
+
+- Correct the dashboard resource cache version so browsers fetch the new
+  Windows open card after updating. No thermostat behavior changes.
+- Add a regression test requiring the integration manifest, resource version
+  and card version to match.
+
+Includes all v0.3.16 Windows open features. Restart Home Assistant after updating
+and refresh the dashboard.
+
 ## 0.3.16
 
 - Add a Windows open switch to the Climado card. It pauses heating/cooling
