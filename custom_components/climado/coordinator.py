@@ -2,7 +2,7 @@
 
 A single ``DataUpdateCoordinator`` evaluates the priority ladder on a 15-minute
 fallback tick, at exact time boundaries, and on relevant state changes, then
-writes the resolved cooling setpoint to the underlying climate entity.
+writes the resolved seasonal setpoint to the underlying climate entity.
 
 Scalar settings (setpoints, timeouts, rate knobs, night window) are "tunables":
 they are exposed as number/time entities (entity_category=config) which own the
@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from datetime import datetime, time, timedelta
 
 from homeassistant.config_entries import ConfigEntry
@@ -33,11 +34,24 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 
 from .const import (
+    CONF_ALERTS_ENABLED,
     CONF_AWAY_DELAY,
     CONF_AWAY_TEMP,
     CONF_BEDROOM_TEMP_SENSOR,
     CONF_CLIMATE_ENTITY,
     CONF_COMFORT_HOME,
+    CONF_HEATING_ENABLED,
+    CONF_AUX_HEAT_SWITCH,
+    CONF_OUTDOOR_TEMP_SENSOR,
+    CONF_HEAT_COST,
+    CONF_HEAT_HOME,
+    CONF_HEAT_AWAY,
+    CONF_HEAT_VACATION,
+    CONF_HEAT_PREARRIVAL,
+    DEFAULT_HEAT_HOME,
+    DEFAULT_HEAT_AWAY,
+    DEFAULT_HEAT_VACATION,
+    DEFAULT_HEAT_PREARRIVAL,
     CONF_MAIN_TEMP_SENSOR,
     CONF_NIGHT_END,
     CONF_NIGHT_START,
@@ -79,6 +93,10 @@ from .const import (
 )
 from .rate import default_ulo_plan, plan_from_schedule, plan_to_dict, rate_offset
 from .windows import WindowsPause
+from .fuel import aux_selection, find_aux_entity, running_source, selected_source
+from .advisory import heat_advisory
+from .system import SystemControl
+from .alerts import HeatingAlerts
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -138,15 +156,21 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         self._manual_hold_until: datetime | None = None
         self._unsub: list = []
         self._boundary_unsub = None
-        self._structural = {k: self.opt(k) for k in STRUCTURAL_KEYS}
+        self._structural = {k: self.opt(k) for k in STRUCTURAL_KEYS if k != CONF_HEATING_ENABLED}
         self._store = Store(hass, 1, f"{DOMAIN}.{entry.entry_id}.runtime")
         self._saved_runtime: dict | None = None
         self._evaluation_lock = asyncio.Lock()
-        self.windows = WindowsPause(hass, self.opt(CONF_CLIMATE_ENTITY), entry.entry_id)
+        self._hvac_context: tuple | None = None
+        self._aux_entity = self.opt(CONF_AUX_HEAT_SWITCH)
+        self._fuel_discovery_error = None
+        self.windows = WindowsPause(hass, self.opt(CONF_CLIMATE_ENTITY), entry.entry_id, self._aux_entity)
+        self.system = SystemControl(self)
+        self.alerts = HeatingAlerts(self)
+        self._last_fuel_observation = None
 
     def structural_changed(self) -> bool:
         """True if a structural (entity) option changed since last check."""
-        current = {k: self.opt(k) for k in STRUCTURAL_KEYS}
+        current = {k: self.opt(k) for k in STRUCTURAL_KEYS if k != CONF_HEATING_ENABLED}
         if current != self._structural:
             self._structural = current
             return True
@@ -160,6 +184,10 @@ class ClimadoCoordinator(DataUpdateCoordinator):
     def opt(self, key, default=None):
         value = self.options.get(key, default)
         return default if value is None else value
+
+    def _cost_options(self) -> dict:
+        value = self.opt(CONF_HEAT_COST, {})
+        return value if isinstance(value, dict) else {}
 
     def tune(self, key, default=None):
         """Live tunable value (entity-owned), falling back to options/default."""
@@ -238,7 +266,16 @@ class ClimadoCoordinator(DataUpdateCoordinator):
 
     async def async_restore_runtime(self) -> None:
         """Restore departure timing and this night's latch before evaluating."""
+        if not self._aux_entity:
+            try:
+                self._aux_entity = find_aux_entity(self.hass, self.opt(CONF_CLIMATE_ENTITY))
+            except ValueError as err:
+                self._fuel_discovery_error = str(err)
+        self.windows.aux_entity = self._aux_entity
         await self.windows.async_load()
+        await self.system.async_load()
+        if self.windows.busy:
+            await self.system.async_cancel()
         saved = await self._store.async_load()
         if not saved or saved.get("context") != self._runtime_context():
             return
@@ -269,9 +306,13 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         watch = list(self.opt(CONF_PRESENCE_ENTITIES, [])) + list(
             self.opt(CONF_OCCUPANCY_ENTITIES, [])
         )
-        for key in (CONF_WORKDAY_SENSOR, CONF_CLIMATE_ENTITY, CONF_MAIN_TEMP_SENSOR, CONF_BEDROOM_TEMP_SENSOR):
+        for key in (CONF_WORKDAY_SENSOR, CONF_CLIMATE_ENTITY, CONF_MAIN_TEMP_SENSOR, CONF_BEDROOM_TEMP_SENSOR, CONF_OUTDOOR_TEMP_SENSOR):
             if entity_id := self.opt(key):
                 watch.append(entity_id)
+        if self._aux_entity:
+            watch.append(self._aux_entity)
+        if gas_sensor := self._cost_options().get("gas_usage_sensor"):
+            watch.append(gas_sensor)
         watch = list(dict.fromkeys(watch))
         if watch:
             self._unsub.append(
@@ -286,15 +327,19 @@ class ClimadoCoordinator(DataUpdateCoordinator):
             unsub()
         self._unsub.clear()
         await self._store.async_save(self._runtime_data())
+        await self.system.async_save()
 
     @callback
     def _handle_sensor_event(self, event: Event) -> None:
         old = event.data.get("old_state")
         new = event.data.get("new_state")
         if old is not None and new is not None and old.state == new.state:
-            if event.data.get("entity_id") != self.opt(CONF_CLIMATE_ENTITY):
+            if event.data.get("entity_id") == self.opt(CONF_OUTDOOR_TEMP_SENSOR):
+                relevant = ("unit_of_measurement",)
+            elif event.data.get("entity_id") == self.opt(CONF_CLIMATE_ENTITY):
+                relevant = ("temperature", "preset_mode", "hvac_action", "current_temperature", "active_sensors", "aux_heat", "equipment_running")
+            else:
                 return
-            relevant = ("temperature", "preset_mode", "hvac_action", "current_temperature", "active_sensors")
             if all(old.attributes.get(k) == new.attributes.get(k) for k in relevant):
                 return
         # Capture departure at the event, before the coordinator's debounce.
@@ -336,6 +381,23 @@ class ClimadoCoordinator(DataUpdateCoordinator):
             hour=0, minute=0, second=0, microsecond=0
         )
         candidates = [next_at(night_start), next_at(night_end), midnight]
+        if self.opt(CONF_ALERTS_ENABLED, True) and (self.windows.busy or self._hvac_mode() == "heat" or self.system.error):
+            candidates.append(now + timedelta(minutes=1))
+        if self.system.pending:
+            candidates.extend([now + timedelta(seconds=5), dt_util.as_local(self.system.pending["until"])])
+        cost_options = self._cost_options()
+        if cost_options.get("enabled"):
+            # State reports can renew freshness without a state_changed event.
+            candidates.append(now + timedelta(minutes=1))
+            outdoor = self.hass.states.get(self.opt(CONF_OUTDOOR_TEMP_SENSOR, ""))
+            try:
+                max_age = float(cost_options.get("outdoor_max_age_minutes", 30))
+            except (ValueError, TypeError, OverflowError):
+                max_age = 0
+            if outdoor is not None and 1 <= max_age <= 120:
+                expiry = outdoor.last_reported + timedelta(minutes=max_age)
+                if expiry > dt_util.as_utc(now):
+                    candidates.append(dt_util.as_local(expiry))
         deadlines = [self._prearrival_until, self._manual_hold_until, self._retry_at, self._release_retry_at, self.windows.retry_at]
         if self._absence_since is not None:
             deadlines.append(self._absence_since + timedelta(minutes=int(self.tune(CONF_AWAY_DELAY, DEFAULT_AWAY_DELAY))))
@@ -362,18 +424,28 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         )
 
     # ---- pre-arrival API ----
-    def start_prearrival(self, lead_minutes=None, target=None, only_if_above=None, force=False) -> bool:
-        if self.windows.busy:
+    def start_prearrival(self, lead_minutes=None, target=None, only_if_above=None, force=False, only_if_below=None) -> bool:
+        self._sync_hvac_context()
+        if self.windows.busy or not self.enabled or self._control_blocked():
             return False
+        heating = self._hvac_mode() == "heat"
+        if (heating and only_if_above is not None) or (not heating and only_if_below is not None):
+            raise ValueError("Pre-arrival threshold does not match the thermostat mode")
         lead = int(lead_minutes if lead_minutes is not None else self.tune(CONF_PREARRIVAL_LEAD, DEFAULT_PREARRIVAL_LEAD))
-        tgt = float(target if target is not None else self.tune(CONF_PREARRIVAL_TARGET, DEFAULT_PREARRIVAL_TARGET))
+        default_target = self.tune(CONF_HEAT_PREARRIVAL, DEFAULT_HEAT_PREARRIVAL) if heating else self.tune(CONF_PREARRIVAL_TARGET, DEFAULT_PREARRIVAL_TARGET)
+        tgt = float(target if target is not None else default_target)
+        if not math.isfinite(tgt) or not 0 <= lead <= 720:
+            raise ValueError("Pre-arrival needs a finite target and duration from 0 to 720 minutes")
         threshold = only_if_above if only_if_above is not None else self.tune(CONF_PREARRIVAL_ONLY_IF_ABOVE, DEFAULT_PREARRIVAL_ONLY_IF_ABOVE)
+        if heating:
+            threshold = only_if_below if only_if_below is not None else tgt
         # `force` = explicit user intent (the physical button): never skip on the
         # only-if-above guard. The guard is for conditional/service callers.
         if not force and threshold is not None:
             current = self._get_float(self.opt(CONF_MAIN_TEMP_SENSOR))
-            if current is not None and current <= float(threshold):
-                _LOGGER.info("Climado pre-arrival skipped: house %.1f <= %.1f", current, float(threshold))
+            if not math.isfinite(float(threshold)):
+                raise ValueError("Pre-arrival threshold must be finite")
+            if current is None or not math.isfinite(current) or (current >= float(threshold) if heating else current <= float(threshold)):
                 return False
         self._prearrival_until = dt_util.utcnow() + timedelta(minutes=lead)
         self._prearrival_target = tgt
@@ -495,6 +567,39 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         state = self.hass.states.get(self.opt(CONF_CLIMATE_ENTITY))
         return state.attributes.get(key) if state and state.state not in _UNAVAILABLE else None
 
+    def _hvac_mode(self):
+        state = self.hass.states.get(self.opt(CONF_CLIMATE_ENTITY))
+        return state.state if state else "unavailable"
+
+    def _control_blocked(self):
+        mode = self._hvac_mode()
+        if mode not in ("heat", "cool"):
+            return "thermostat_off" if mode == "off" else "unsupported_hvac_mode"
+        if mode == "heat" and not self.opt(CONF_HEATING_ENABLED, False):
+            return "heating_not_enabled"
+        if mode == "heat":
+            # All Climado temperature entities currently use Celsius.
+            unit = self._climate_attr("temperature_unit") or self.hass.config.units.temperature_unit
+            if unit != "°C":
+                return "unsupported_temperature_unit"
+        return None
+
+    def _sync_hvac_context(self):
+        context = self._fuel_context()
+        if self._hvac_context is not None and self._hvac_context != context:
+            self.clear_prearrival()
+            self.clear_manual_hold()
+            self._release_retry_at = None
+            self._commanded_at = None
+            self._released = True
+        self._hvac_context = context
+
+    def _aux_selection(self):
+        return aux_selection(self.hass, self.opt(CONF_CLIMATE_ENTITY), self._aux_entity)
+
+    def _fuel_context(self):
+        return (self._hvac_mode(), self._aux_selection())
+
     def _next_transition(self, now, night_start, night_end, is_night, plan, is_workday):
         """Soonest upcoming mode/rate change, as {at (UTC iso), label} for the card."""
 
@@ -543,6 +648,9 @@ class ClimadoCoordinator(DataUpdateCoordinator):
 
     async def _send_command(self, command: tuple) -> bool:
         """Wait for the service, then require a matching reported state."""
+        if self._control_blocked():
+            return False
+        context = self._fuel_context()
         if command == self._pending_command and self._retry_at and dt_util.utcnow() < self._retry_at:
             return False
         service = "set_temperature" if command[0] == "temp" else "set_preset_mode"
@@ -555,9 +663,15 @@ class ClimadoCoordinator(DataUpdateCoordinator):
                 blocking=True,
             )
         except Exception as err:  # noqa: BLE001
+            if context != self._fuel_context():
+                self._sync_hvac_context()
+                return False
             self._command_error = str(err) or type(err).__name__
             self._retry_at = dt_util.utcnow() + _RETRY_DELAY
             _LOGGER.error("Climado command %s failed: %s", command, err)
+            return False
+        if context != self._fuel_context():
+            self._sync_hvac_context()
             return False
         self._record_command(command, wrote=True)
         self._confirm_pending()
@@ -567,6 +681,9 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         coast = float(self.tune(CONF_ONPEAK_COAST, DEFAULT_ONPEAK_COAST))
         lead = int(self.tune(CONF_PRECOOL_LEAD, DEFAULT_PRECOOL_LEAD))
         depth = float(self.tune(CONF_PRECOOL_DEPTH, DEFAULT_PRECOOL_DEPTH))
+        if self._hvac_mode() != "cool":
+            # Fuel selection is still manual; no electricity-driven heating offsets.
+            coast, lead, depth = 0.0, 0, 0.0
         custom = self.opt(CONF_RATE_PLAN)
         if isinstance(custom, dict) and custom.get("weekday") and custom.get("weekend"):
             try:
@@ -578,9 +695,17 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         return default_ulo_plan(coast, lead, depth)
 
     # ---- core evaluation ----
+    async def async_set_system_mode(self, mode, source=None, context=None):
+        try:
+            async with self._evaluation_lock:
+                await self.system.async_set(mode, source, context)
+        finally:
+            await self.async_refresh()
+
     async def async_set_windows_open(self, active):
         async with self._evaluation_lock:
             await self.windows.async_set_active(active)
+            await self.system.async_cancel()
             self.clear_prearrival()
             self.clear_manual_hold()
         await self.async_refresh()
@@ -589,7 +714,21 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         # Boundary and entity refreshes may overlap while a service is running.
         async with self._evaluation_lock:
             try:
-                return await self._evaluate()
+                data = await self._evaluate()
+                now = dt_util.now()
+                tier = self._plan().tier_at(now, self._is_workday())
+                data["heat_advisory"] = heat_advisory(
+                    self.hass, self.opt(CONF_HEAT_COST, {}), self.opt(CONF_OUTDOOR_TEMP_SENSOR), tier.tier_id, now,
+                )
+                advisory = data["heat_advisory"]
+                advisory.update(observation_only=True, selected_source=data.get("selected_source"))
+                observation = (advisory["status"], advisory.get("preferred_source"), advisory["reason"], data.get("selected_source"))
+                if advisory["status"] != "disabled" and observation != self._last_fuel_observation:
+                    _LOGGER.info("Climado fuel observation (no switching): status=%s preferred=%s reason=%s selected=%s", *observation)
+                self._last_fuel_observation = observation
+                data["heating_alerts"] = self.alerts.update(data)
+                await self.system.async_save()
+                return data
             finally:
                 self._save_runtime()
                 self._schedule_boundary_refresh(
@@ -600,6 +739,10 @@ class ClimadoCoordinator(DataUpdateCoordinator):
                 )
 
     async def _evaluate(self) -> dict:
+        self.system.confirm()
+        released_before_pause = self._released
+        self._sync_hvac_context()
+        control_context = self._hvac_context
         now = dt_util.now()
         occupied = self._update_presence()
 
@@ -637,12 +780,18 @@ class ClimadoCoordinator(DataUpdateCoordinator):
 
         if self.windows.busy:
             restore = self.windows.restore
-            released = restore.get("released", True) if restore else self._released
+            released = restore.get("released", True) if restore else released_before_pause
             if await self.windows.async_step(released):
                 self.clear_prearrival()
                 self.clear_manual_hold()
                 return self._state("windows_open", "windows_open" if self.windows.active else "windows_restoring", None, plan.tier_at(now, is_workday), occupied, is_night, rate_plan=plan_to_dict(plan))
+            self._sync_hvac_context()
+            control_context = self._hvac_context
             self._released = released
+            plan = self._plan()
+
+        if self.system.pending:
+            return self._state("inactive", "system_mode_pending", None, plan.tier_at(now, is_workday), occupied, is_night, rate_plan=plan_to_dict(plan))
 
         if not self.enabled:
             # Hand the thermostat cleanly back to its native schedule (once per
@@ -653,12 +802,24 @@ class ClimadoCoordinator(DataUpdateCoordinator):
                 self._last_commanded = None  # fresh baseline when re-enabled
                 self._released = await self._release_control()
             return self._state(MODE_DISABLED, "disabled", None, None, occupied, is_night)
-        self._released = False
+        if blocked := self._control_blocked():
+            self.clear_prearrival()
+            if self._release_retry_at is None:
+                self.clear_manual_hold()
+            if blocked == "heating_not_enabled" and not self._released:
+                if self._release_retry_at is None or dt_util.utcnow() >= self._release_retry_at:
+                    self._released = await self._release_control()
+            return self._state("inactive", blocked, None, plan.tier_at(now, is_workday), occupied, is_night, rate_plan=plan_to_dict(plan))
         self._release_retry_at = None
+        self._released = False
 
         comfort_home = float(self.tune(CONF_COMFORT_HOME, DEFAULT_COMFORT_HOME))
         away_temp = float(self.tune(CONF_AWAY_TEMP, DEFAULT_AWAY_TEMP))
         vacation_temp = float(self.tune(CONF_VACATION_TEMP, DEFAULT_VACATION_TEMP))
+        if self._hvac_mode() == "heat":
+            comfort_home = float(self.tune(CONF_HEAT_HOME, DEFAULT_HEAT_HOME))
+            away_temp = float(self.tune(CONF_HEAT_AWAY, DEFAULT_HEAT_AWAY))
+            vacation_temp = float(self.tune(CONF_HEAT_VACATION, DEFAULT_HEAT_VACATION))
         forced = self.manual_mode if self.manual_mode in (
             MODE_HOME, MODE_AWAY, MODE_SLEEP, MODE_VACATION
         ) else None
@@ -699,7 +860,8 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         elif forced == MODE_AWAY:
             mode, action, reason = MODE_AWAY, ("temp", away_temp), "manual_away"
         elif self._prearrival_active():
-            mode, action, reason = MODE_PREARRIVAL, ("temp", float(self._prearrival_target)), "pre_arrival"
+            mode, action = MODE_PREARRIVAL, ("temp", float(self._prearrival_target))
+            reason = "pre_arrival_heat" if self._hvac_mode() == "heat" else "pre_arrival"
         elif (
             forced is None
             and not occupied
@@ -731,6 +893,11 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         else:
             target = action[1]
             applied = await self._apply(target)
+        if control_context != self._fuel_context():
+            # A service awaited above may finish after the user changes modes.
+            # Never publish its old target as the new season's resolved target.
+            self._sync_hvac_context()
+            return self._state("inactive", "thermostat_mode_changed", None, tier, occupied, is_night, rate_plan=plan_to_dict(self._plan()))
         state = self._state(
             mode, reason, target, tier, occupied, is_night, applied, plan_to_dict(plan)
         )
@@ -759,14 +926,19 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         if state is None:
             _LOGGER.warning("Climado: climate entity %s not found", ent)
             return None
-        if state.state != "cool":
-            _LOGGER.debug("Climado: %s not in cool mode (%s); skipping", ent, state.state)
+        if self._control_blocked():
             return None
-        dmin = float(state.attributes.get("min_temp", DEVICE_COOL_MIN))
-        dmax = float(state.attributes.get("max_temp", DEVICE_COOL_MAX))
+        heating = state.state == "heat"
+        dmin = float(state.attributes.get("min_temp", 10 if heating else DEVICE_COOL_MIN))
+        dmax = float(state.attributes.get("max_temp", 28 if heating else DEVICE_COOL_MAX))
         step = float(state.attributes.get("target_temp_step", 0.5) or 0.5)
+        if not all(math.isfinite(v) for v in (float(target), dmin, dmax, step)) or step <= 0 or dmin > dmax:
+            self._pending_command = None
+            self._retry_at = None
+            self._command_error = "Invalid thermostat target or limits"
+            return None
         value = min(dmax, max(dmin, float(target)))
-        value = round(value / step) * step
+        value = min(dmax, max(dmin, round(value / step) * step))
         current = state.attributes.get("temperature")
         command = ("temp", value)
         if self._commands_match(command, self._thermostat_actual()) and self._pending_command in (None, command):
@@ -787,6 +959,7 @@ class ClimadoCoordinator(DataUpdateCoordinator):
                 )
                 _LOGGER.info("Climado disabled: resumed %s native program", ent)
                 self._release_retry_at = None
+                self._command_error = None
                 return True
             except Exception as err:  # noqa: BLE001
                 _LOGGER.error("Climado: failed to resume program on %s: %s", ent, err)
@@ -810,8 +983,7 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         if state is None:
             _LOGGER.warning("Climado: climate entity %s not found", ent)
             return None
-        if state.state != "cool":
-            _LOGGER.debug("Climado: %s not in cool mode (%s); skipping", ent, state.state)
+        if self._control_blocked():
             return None
         command = ("preset", preset)
         if state.attributes.get("preset_mode") == preset and self._pending_command in (None, command):
@@ -821,6 +993,16 @@ class ClimadoCoordinator(DataUpdateCoordinator):
 
     def _state(self, mode, reason, target, tier, occupied, is_night, applied=None, rate_plan=None) -> dict:
         return {
+            "system_control": self.system.snapshot(),
+            "hvac_mode": self._hvac_mode(),
+            "heating_enabled": self.opt(CONF_HEATING_ENABLED, False),
+            "fuel_control": "manual",
+            "aux_heat": self._aux_selection(),
+            "aux_heat_entity": self._aux_entity,
+            "fuel_discovery_error": self._fuel_discovery_error,
+            "selected_source": selected_source(self._hvac_mode(), self._aux_selection()),
+            "running_source": running_source(self._climate_attr("equipment_running"), self._climate_attr("hvac_action")),
+            "equipment_running": self._climate_attr("equipment_running"),
             "hvac_action": self._climate_attr("hvac_action"),
             "thermostat_target": self._climate_attr("temperature"),
             "control_temperature": self._climate_attr("current_temperature"),

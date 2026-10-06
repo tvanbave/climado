@@ -93,7 +93,7 @@ async def test_furnace_only_restored_without_aux_off_toggle(window_engine):
     await e.c.async_set_windows_open(False)
     assert e.hass.states.get("switch.test_aux").state == "on"
     assert e.service.call_args.args[:2] == ("switch", "turn_on")
-    assert all(call.args[1] in ("set_hvac_mode", "turn_on") for call in e.service.call_args_list)
+    assert e.c.data["reason"] == "heating_not_enabled"
 
 
 async def test_failures_wait_and_retry_while_remaining_paused(window_engine):
@@ -192,3 +192,25 @@ async def test_close_before_off_confirmation_waits_then_restores(window_engine):
     await e.c._async_update_data()
     assert e.hass.states.get("climate.test").state == "cool"
     assert not e.c.windows.busy
+
+
+@pytest.mark.parametrize("gas", [False, True])
+async def test_heating_window_pause_spans_sleep_expiry_and_restores_current_target(window_engine, gas):
+    e = window_engine
+    e.entry.options["heating_enabled"] = True
+    e.c._aux_entity = "switch.test_aux"
+    e.hass.states.async_set("switch.test_aux", "on" if gas else "off")
+    old = e.hass.states.get("climate.test")
+    e.hass.states.async_set("climate.test", "heat", {**old.attributes, "temperature_unit": "°C"})
+    e.clock.set("2026-09-07T23:00:00")
+    e.c.set_manual_mode("sleep")
+    await e.c.async_set_windows_open(True)
+    e.clock.set("2026-09-08T07:00:00")
+    await e.c._async_update_data()
+    assert e.c.manual_mode == "auto"
+    assert e.hass.states.get("climate.test").state == "off"
+    await e.c.async_set_windows_open(False)
+    assert e.hass.states.get("climate.test").state == "heat"
+    assert e.c.data["target"] == 20
+    assert e.c.data["selected_source"] == ("gas" if gas else "heat_pump")
+    assert e.hass.states.get("climate.test").attributes["fan_min_on_time"] == 45

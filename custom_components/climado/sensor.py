@@ -27,6 +27,38 @@ class ClimadoSensorDescription(SensorEntityDescription):
 
 SENSORS: tuple[ClimadoSensorDescription, ...] = (
     ClimadoSensorDescription(
+        key="heating_alert", name="Heating alert", icon="mdi:alert-outline",
+        value_fn=lambda d: d.get("heating_alerts", {}).get("status"),
+    ),
+    ClimadoSensorDescription(
+        key="selected_fuel", name="Selected fuel", icon="mdi:radiator",
+        value_fn=lambda d: d.get("selected_source"),
+    ),
+    ClimadoSensorDescription(
+        key="running_equipment", name="Running equipment", icon="mdi:hvac",
+        value_fn=lambda d: d.get("running_source"),
+    ),
+    ClimadoSensorDescription(
+        key="fuel_recommendation", name="Fuel cost recommendation", icon="mdi:cash-check",
+        value_fn=lambda d: (d.get("heat_advisory", {}).get("preferred_source") or "no_preference")
+        if d.get("heat_advisory", {}).get("status") == "ready" else None,
+    ),
+    ClimadoSensorDescription(
+        key="heat_pump_cost", name="Heat pump delivered heat cost", icon="mdi:cash",
+        native_unit_of_measurement="CAD/kWh heat",
+        value_fn=lambda d: d.get("heat_advisory", {}).get("heat_pump_per_kwh"),
+    ),
+    ClimadoSensorDescription(
+        key="furnace_cost_min", name="Furnace delivered heat cost minimum", icon="mdi:cash",
+        native_unit_of_measurement="CAD/kWh heat",
+        value_fn=lambda d: d.get("heat_advisory", {}).get("furnace_per_kwh_min"),
+    ),
+    ClimadoSensorDescription(
+        key="furnace_cost_max", name="Furnace delivered heat cost maximum", icon="mdi:cash",
+        native_unit_of_measurement="CAD/kWh heat",
+        value_fn=lambda d: d.get("heat_advisory", {}).get("furnace_per_kwh_max"),
+    ),
+    ClimadoSensorDescription(
         key="effective_mode",
         name="Effective mode",
         icon="mdi:home-account",
@@ -95,10 +127,21 @@ class ClimadoSensor(CoordinatorEntity, SensorEntity):
         data = self.coordinator.data or {}
         if self.entity_description.key == "effective_mode":
             return {
+                "system_control": data.get("system_control"),
+                "heating_alerts": data.get("heating_alerts"),
+                "hvac_mode": data.get("hvac_mode"),
                 "windows_open": data.get("windows_open"),
                 "windows_restoring": data.get("windows_restoring"),
                 "windows_pending": data.get("windows_pending"),
                 "windows_error": data.get("windows_error"),
+                "heating_enabled": data.get("heating_enabled"),
+                "fuel_control": data.get("fuel_control"),
+                "selected_source": data.get("selected_source"),
+                "running_source": data.get("running_source"),
+                "aux_heat_entity": data.get("aux_heat_entity"),
+                "fuel_discovery_error": data.get("fuel_discovery_error"),
+                "aux_heat": data.get("aux_heat"),
+                "equipment_running": data.get("equipment_running"),
                 "applied_setpoint": data.get("applied"),
                 "command_pending": data.get("command_pending"),
                 "command_error": data.get("command_error"),
@@ -120,6 +163,10 @@ class ClimadoSensor(CoordinatorEntity, SensorEntity):
                 "regulating": data.get("regulating"),
                 "next_transition": data.get("next_transition"),
             }
+        if self.entity_description.key == "fuel_recommendation":
+            return data.get("heat_advisory", {})
+        if self.entity_description.key == "heating_alert":
+            return data.get("heating_alerts", {})
         if self.entity_description.key == "rate_tier":
             return {
                 "plan": data.get("rate_plan"),

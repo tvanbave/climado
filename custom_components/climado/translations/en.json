@@ -4,7 +4,7 @@
     "step": {
       "user": {
         "title": "Add a Climado zone",
-        "description": "Pick the thermostat and the sensors that drive it. You can change everything later in the integration's options.",
+        "description": "Pick the thermostat and sensors. Heating is optional, requires Celsius units, and never switches Heat/Aux. Review the Heating configuration temperatures on the Climado device before enabling heating targets. Sleep uses the ecobee Sleep heating setpoint.",
         "data": {
           "name": "Zone name",
           "climate_entity": "Thermostat (climate entity)",
@@ -13,6 +13,9 @@
           "presence_entities": "Presence (phones / persons)",
           "occupancy_entities": "Occupancy / motion sensors",
           "workday_sensor": "Workday sensor (weekends/holidays)",
+          "heating_enabled": "Enable heating targets (does not switch Heat/Aux)",
+          "heating_alerts_enabled": "Monitor heating and cold window pauses",
+          "heating_alert_notifications": "Show heating alerts in Home Assistant notifications",
           "comfort_home": "Home comfort setpoint",
           "away_temp": "Away setpoint",
           "vacation_temp": "Vacation setpoint",
@@ -24,7 +27,9 @@
           "precool_depth": "Pre-cool depth (cooler by)",
           "prearrival_lead_minutes": "Pre-arrival lead",
           "prearrival_target": "Pre-arrival target",
-          "prearrival_only_if_above": "Pre-arrival only if above"
+          "prearrival_only_if_above": "Pre-arrival only if above",
+          "aux_heat_switch": "Ecobee Auxiliary heat only switch (optional auto-discovery)",
+          "outdoor_temp_sensor": "Outdoor temperature sensor"
         }
       }
     },
@@ -36,7 +41,7 @@
     "step": {
       "init": {
         "title": "Climado options",
-        "description": "Pick the thermostat and sensors. Scalar settings (setpoints, timeouts, rate knobs, night window) are edited as Configuration entities on the Climado device. The overnight comfort temperature lives in the ecobee's own Sleep comfort setting.",
+        "description": "Setpoints and timeouts are Configuration entities on the Climado device. Review the separate Heating temperatures before enabling heating targets. Heating requires Celsius units and preserves your selected Heat/Aux source; it does not provide automatic furnace fallback. Sleep uses the ecobee Sleep comfort setting.",
         "data": {
           "name": "Zone name",
           "climate_entity": "Thermostat (climate entity)",
@@ -44,9 +49,42 @@
           "bedroom_temp_sensor": "Bedroom / second sensor",
           "presence_entities": "Presence (phones / persons)",
           "occupancy_entities": "Occupancy / motion sensors",
-          "workday_sensor": "Workday sensor (weekends/holidays)"
+          "workday_sensor": "Workday sensor (weekends/holidays)",
+          "heating_enabled": "Enable heating targets (does not switch Heat/Aux)",
+          "heating_alerts_enabled": "Monitor heating and cold window pauses",
+          "heating_alert_notifications": "Show heating alerts in Home Assistant notifications",
+          "aux_heat_switch": "Ecobee Auxiliary heat only switch (optional auto-discovery)",
+          "outdoor_temp_sensor": "Outdoor temperature sensor",
+          "configure_heat_cost": "Configure heating cost estimates"
+        }
+      },
+      "heat_cost": {
+        "title": "Heating cost estimates",
+        "description": "Advisory only; fuel selection stays manual. Use CAD variable prices on the same tax/rebate basis, excluding fixed monthly charges. Valid-until dates are exclusive. Performance rows must be in increasing outdoor temperature order and describe your matched system. Incomplete settings can be saved; the card will show what is missing. {detail}",
+        "data": {
+          "enabled": "Enable heating cost estimates",
+          "electricity_prices": "ULO electricity prices (CAD/kWh)",
+          "electricity_valid_from": "Electricity prices valid from",
+          "electricity_valid_until": "Electricity prices valid until (exclusive)",
+          "electricity_source": "Electricity price source / bill reference",
+          "gas_blocks": "Variable gas prices by billing-period block",
+          "gas_valid_from": "Gas prices valid from",
+          "gas_valid_until": "Gas prices valid until (exclusive)",
+          "gas_source": "Gas price source / bill reference",
+          "gas_usage_sensor": "Current billing-period total gas consumption (optional, m³)",
+          "gas_kwh_per_m3": "Gas energy conversion (kWh/m³, consistent with efficiency basis)",
+          "furnace_efficiency": "Furnace efficiency (fraction, e.g. 0.95)",
+          "furnace_aux_kwh_per_heat_kwh": "Furnace blower electricity per kWh delivered heat",
+          "cop_points": "Matched-system performance table",
+          "cop_source": "Performance table source / matched equipment",
+          "outdoor_max_age_minutes": "Maximum outdoor reading age (minutes)",
+          "savings_margin": "Required cost advantage (fraction, e.g. 0.05)",
+          "prices_consistent": "Prices use the same tax/rebate basis and exclude fixed charges"
         }
       }
+    },
+    "error": {
+      "invalid_heat_cost": "Invalid heat-cost inputs. Check the details above."
     }
   }
 }

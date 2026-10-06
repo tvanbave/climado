@@ -52,6 +52,10 @@ class ClimadoNumber(CoordinatorEntity, RestoreNumber):
             self._attr_native_value = last.native_value
         self.coordinator.set_tunable(self._key, self._attr_native_value)
 
+    @property
+    def extra_state_attributes(self):
+        return {"climado_key": self._key}
+
     async def async_set_native_value(self, value: float) -> None:
         self._attr_native_value = value
         self.coordinator.set_tunable(self._key, value)

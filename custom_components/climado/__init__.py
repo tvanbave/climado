@@ -16,6 +16,7 @@ from .const import (
     ATTR_FORCE,
     ATTR_LEAD_MINUTES,
     ATTR_ONLY_IF_ABOVE,
+    ATTR_ONLY_IF_BELOW,
     ATTR_PLAN,
     ATTR_TARGET,
     CONF_RATE_PLAN,
@@ -23,6 +24,7 @@ from .const import (
     PLATFORMS,
     SERVICE_CLEAR_PREARRIVAL,
     SERVICE_SET_RATE_PLAN,
+    SERVICE_SET_SYSTEM_MODE,
     SERVICE_START_PREARRIVAL,
     VERSION,
 )
@@ -38,6 +40,7 @@ _START_SCHEMA = vol.Schema(
         vol.Optional(ATTR_LEAD_MINUTES): vol.All(vol.Coerce(int), vol.Range(min=0, max=720)),
         vol.Optional(ATTR_TARGET): vol.All(vol.Coerce(float), vol.Range(min=10, max=33.5)),
         vol.Optional(ATTR_ONLY_IF_ABOVE): vol.All(vol.Coerce(float), vol.Range(min=10, max=40)),
+        vol.Optional(ATTR_ONLY_IF_BELOW): vol.All(vol.Coerce(float), vol.Range(min=10, max=28)),
         vol.Optional(ATTR_FORCE, default=False): vol.Boolean(),
     }
 )
@@ -83,6 +86,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 SERVICE_START_PREARRIVAL,
                 SERVICE_CLEAR_PREARRIVAL,
                 SERVICE_SET_RATE_PLAN,
+                SERVICE_SET_SYSTEM_MODE,
             ):
                 hass.services.async_remove(DOMAIN, service)
     return unloaded
@@ -95,12 +99,16 @@ def _register_services(hass: HomeAssistant) -> None:
 
     async def _handle_start(call: ServiceCall) -> None:
         for coordinator in list(hass.data.get(DOMAIN, {}).values()):
-            coordinator.start_prearrival(
-                call.data.get(ATTR_LEAD_MINUTES),
-                call.data.get(ATTR_TARGET),
-                call.data.get(ATTR_ONLY_IF_ABOVE),
-                force=call.data.get(ATTR_FORCE, False),
-            )
+            try:
+                coordinator.start_prearrival(
+                    call.data.get(ATTR_LEAD_MINUTES),
+                    call.data.get(ATTR_TARGET),
+                    call.data.get(ATTR_ONLY_IF_ABOVE),
+                    force=call.data.get(ATTR_FORCE, False),
+                    only_if_below=call.data.get(ATTR_ONLY_IF_BELOW),
+                )
+            except (TypeError, ValueError) as err:
+                raise ServiceValidationError(str(err)) from err
             await coordinator.async_request_refresh()
 
     async def _handle_clear(call: ServiceCall) -> None:
@@ -122,6 +130,18 @@ def _register_services(hass: HomeAssistant) -> None:
             hass.config_entries.async_update_entry(
                 entry, options={**entry.options, CONF_RATE_PLAN: norm}
             )
+
+    async def _handle_system(call: ServiceCall) -> None:
+        coordinator = hass.data.get(DOMAIN, {}).get(call.data["entry_id"])
+        if coordinator is None:
+            raise ServiceValidationError("Climado entry is not loaded")
+        await coordinator.async_set_system_mode(call.data["hvac_mode"], call.data.get("heat_source"), call.context)
+
+    hass.services.async_register(DOMAIN, SERVICE_SET_SYSTEM_MODE, _handle_system, schema=vol.Schema({
+        vol.Required("entry_id"): str,
+        vol.Required("hvac_mode"): vol.In(("off", "cool", "heat")),
+        vol.Optional("heat_source"): vol.In(("heat_pump", "gas")),
+    }))
 
     hass.services.async_register(
         DOMAIN, SERVICE_START_PREARRIVAL, _handle_start, schema=_START_SCHEMA

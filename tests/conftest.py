@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 import pytest
 import pytest_asyncio
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import frame
+from homeassistant.helpers import frame, entity_registry as er, device_registry as dr
 from homeassistant.util import dt as dt_util
 
 from custom_components.climado.coordinator import ClimadoCoordinator
@@ -42,6 +42,9 @@ def clock(monkeypatch):
 async def engine(tmp_path, monkeypatch, clock):
     hass = HomeAssistant(str(tmp_path))
     frame.async_setup(hass)
+    dr.async_setup(hass)
+    await dr.async_load(hass)
+    await er.async_load(hass)
     hass.states.async_set("person.test", "home")
     hass.states.async_set("sensor.main", "23")
     hass.states.async_set("sensor.bedroom", "25")
@@ -68,7 +71,7 @@ async def engine(tmp_path, monkeypatch, clock):
             attrs.update(temperature=23.1, preset_mode=data["preset_mode"])
         elif service == "resume_program":
             attrs.update(preset_mode="home")
-        hass.states.async_set("climate.test", "cool", attrs)
+        hass.states.async_set("climate.test", hass.states.get("climate.test").state, attrs)
 
     service = AsyncMock(side_effect=echo)
     real_call = type(hass.services).async_call

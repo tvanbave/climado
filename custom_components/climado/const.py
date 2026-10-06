@@ -4,7 +4,7 @@ from __future__ import annotations
 from homeassistant.const import Platform
 
 DOMAIN = "climado"
-VERSION = "0.3.17"
+VERSION = "0.4.0b1"
 
 PLATFORMS = [
     Platform.SELECT,
@@ -24,6 +24,25 @@ CONF_PRESENCE_ENTITIES = "presence_entities"
 CONF_OCCUPANCY_ENTITIES = "occupancy_entities"
 CONF_WORKDAY_SENSOR = "workday_sensor"
 CONF_RATE_PLAN = "rate_plan"  # custom schedule {weekday:[[s,e,tier]...], weekend:[...]}
+CONF_HEATING_ENABLED = "heating_enabled"
+CONF_AUX_HEAT_SWITCH = "aux_heat_switch"
+CONF_OUTDOOR_TEMP_SENSOR = "outdoor_temp_sensor"
+CONF_HEAT_COST = "heat_cost"
+CONF_ALERTS_ENABLED = "heating_alerts_enabled"
+CONF_ALERT_NOTIFICATIONS = "heating_alert_notifications"
+CONF_ALERT_LOW_TEMP = "alert_low_temperature"
+CONF_ALERT_DELAY = "alert_cold_delay_minutes"
+CONF_ALERT_HEAT_MINUTES = "alert_heating_minutes"
+CONF_ALERT_MIN_RISE = "alert_minimum_rise"
+CONF_HEAT_HOME = "heat_home"
+CONF_HEAT_AWAY = "heat_away"
+CONF_HEAT_VACATION = "heat_vacation"
+CONF_HEAT_PREARRIVAL = "heat_prearrival"
+
+DEFAULT_HEAT_HOME = 20.0
+DEFAULT_HEAT_AWAY = 17.0
+DEFAULT_HEAT_VACATION = 15.0
+DEFAULT_HEAT_PREARRIVAL = 20.0
 
 CONF_COMFORT_HOME = "comfort_home"
 CONF_AWAY_TEMP = "away_temp"
@@ -79,16 +98,26 @@ SELECT_MODES = [MODE_AUTO, MODE_HOME, MODE_AWAY, MODE_SLEEP, MODE_VACATION]
 SERVICE_START_PREARRIVAL = "start_pre_arrival"
 SERVICE_CLEAR_PREARRIVAL = "clear_pre_arrival"
 SERVICE_SET_RATE_PLAN = "set_rate_plan"
+SERVICE_SET_SYSTEM_MODE = "set_system_mode"
 ATTR_PLAN = "plan"
 
 ATTR_LEAD_MINUTES = "lead_minutes"
 ATTR_TARGET = "target"
 ATTR_ONLY_IF_ABOVE = "only_if_above"
+ATTR_ONLY_IF_BELOW = "only_if_below"
 ATTR_FORCE = "force"
 
 # ---- Tunable config exposed as device entities (entity_category=config) ----
 # (key, name, min, max, step, unit, icon, default)
 NUMBER_TUNABLES = [
+    (CONF_ALERT_LOW_TEMP, "Window pause low temperature", 5, 22, 0.5, "°C", "mdi:thermometer-alert", 16),
+    (CONF_ALERT_DELAY, "Window pause cold alert delay", 1, 120, 1, "min", "mdi:timer-alert-outline", 10),
+    (CONF_ALERT_HEAT_MINUTES, "Heating progress check interval", 15, 180, 5, "min", "mdi:timer-alert-outline", 60),
+    (CONF_ALERT_MIN_RISE, "Heating minimum temperature rise", 0.1, 3, 0.1, "°C", "mdi:thermometer-chevron-up", 0.3),
+    (CONF_HEAT_HOME, "Heating Home", 10, 28, 0.5, "°C", "mdi:radiator", DEFAULT_HEAT_HOME),
+    (CONF_HEAT_AWAY, "Heating Away", 10, 28, 0.5, "°C", "mdi:radiator", DEFAULT_HEAT_AWAY),
+    (CONF_HEAT_VACATION, "Heating Vacation", 10, 28, 0.5, "°C", "mdi:radiator", DEFAULT_HEAT_VACATION),
+    (CONF_HEAT_PREARRIVAL, "Heating pre-arrival", 10, 28, 0.5, "°C", "mdi:home-clock", DEFAULT_HEAT_PREARRIVAL),
     (CONF_COMFORT_HOME, "Home comfort", 10, 33.5, 0.5, "°C", "mdi:home-thermometer", DEFAULT_COMFORT_HOME),
     (CONF_AWAY_TEMP, "Away setpoint", 10, 33.5, 0.5, "°C", "mdi:home-export-outline", DEFAULT_AWAY_TEMP),
     (CONF_VACATION_TEMP, "Vacation setpoint", 10, 33.5, 0.5, "°C", "mdi:bag-suitcase", DEFAULT_VACATION_TEMP),
@@ -109,6 +138,10 @@ TIME_TUNABLES = [
 
 # Structural keys edited via the options flow (everything else is a device entity)
 STRUCTURAL_KEYS = [
+    CONF_AUX_HEAT_SWITCH,
+    CONF_OUTDOOR_TEMP_SENSOR,
+    CONF_HEAT_COST,
+    CONF_HEATING_ENABLED,
     CONF_NAME,
     CONF_CLIMATE_ENTITY,
     CONF_MAIN_TEMP_SENSOR,

@@ -98,7 +98,7 @@ function numericValue(value) {
 
 class ClimadoCard extends LitElement {
   static get properties() {
-    return { hass: {}, _config: {}, _draft: { state: true } };
+    return { hass: {}, _config: {}, _draft: { state: true }, _heatSource: { state: true }, _systemBusy: { state: true }, _systemError: { state: true } };
   }
 
   static getConfigElement() {
@@ -117,6 +117,9 @@ class ClimadoCard extends LitElement {
     this._config = config;
     this._draft = null; // lazy-init from plan
     this._baseDraft = null;
+    this._heatSource = "heat_pump";
+    this._systemBusy = false;
+    this._systemError = null;
   }
 
   getCardSize() {
@@ -133,7 +136,10 @@ class ClimadoCard extends LitElement {
       ? Object.keys(reg).filter((e) => reg[e].device_id === deviceId)
       : [this._config.entity];
     for (const id of ids) {
-      if (id.startsWith("select.")) found.mode = id;
+      const key = this._attr(id, "climado_key");
+      if (id.startsWith("number.") && ["heat_home", "heat_away", "heat_vacation", "heat_prearrival"].includes(key)) found[key] = id;
+      else if (id.includes("fuel_cost_recommendation") || id.includes("fuel_recommendation")) found.fuel_recommendation = id;
+      else if (id.startsWith("select.")) found.mode = id;
       else if (id.includes("effective_mode")) found.effective_mode = id;
       else if (id.includes("control_reason") || id.includes("_reason")) found.reason = id;
       else if (id.includes("resolved_target")) found.target = id;
@@ -175,6 +181,59 @@ class ClimadoCard extends LitElement {
   }
 
   // ---- actions ----
+  async _setHeatingTarget(entity, input) {
+    const value = input.value.trim() === "" ? NaN : Number(input.value);
+    const min = numericValue(this._attr(entity, "min")) ?? 10;
+    const max = numericValue(this._attr(entity, "max")) ?? 28;
+    if (!this._available(entity) || !Number.isFinite(value) || value < min || value > max) {
+      input.value = this._state(entity)?.state || "";
+      this._systemError = "Heating target is outside the supported range";
+      return;
+    }
+    try {
+      await this.hass.callService("number", "set_value", { entity_id: entity, value });
+      this._systemError = null;
+    } catch (err) {
+      input.value = this._state(entity)?.state || "";
+      this._systemError = err?.message || "Heating target could not be saved";
+    }
+  }
+
+  _systemState(e) {
+    return this._attr(e.effective_mode, "system_control");
+  }
+
+  _canSetSystem(system, mode) {
+    if (!system?.entry_id || this._systemBusy || !this.hass.services?.climado?.set_system_mode) return false;
+    if (!system.modes?.includes(mode)) return false;
+    if (mode === "off") return system.can_stop && (system.hvac_mode !== "off" || !!system.pending);
+    return system.can_start && (mode !== "heat" || system.source_available);
+  }
+
+  _chooseHeatSource(e, source) {
+    const system = this._systemState(e);
+    if (!system?.can_start || !system.source_available || this._systemBusy || !["heat_pump", "gas"].includes(source)) return;
+    this._heatSource = source;
+    this._systemError = null;
+  }
+
+  async _setSystemMode(e, mode) {
+    const system = this._systemState(e);
+    if (!this._canSetSystem(system, mode)) return;
+    this._systemBusy = true;
+    this._systemError = null;
+    if (mode === "off" && ["heat_pump", "gas"].includes(system.heat_source)) this._heatSource = system.heat_source;
+    const data = { entry_id: system.entry_id, hvac_mode: mode };
+    if (mode === "heat") data.heat_source = this._heatSource;
+    try {
+      await this.hass.callService("climado", "set_system_mode", data);
+    } catch (err) {
+      this._systemError = err?.message || "System command failed";
+    } finally {
+      this._systemBusy = false;
+    }
+  }
+
   _setMode(e, mode) {
     if (!this._available(e.mode)) return;
     this.hass.callService("select", "select_option", {
@@ -284,10 +343,11 @@ class ClimadoCard extends LitElement {
     const bedT = numericValue(a("bedroom_temp"));
     const hvac = cleanValue(a("hvac_action"));
     const cooling = hvac === "cooling";
+    const heating = a("hvac_mode") === "heat";
     const regulating = cleanValue(a("regulating"));
     const enableReady = this._available(e.enable);
     const vacationReady = this._available(e.vacation);
-    const prearrivalReady = this._callable(e.prearrival) && eff !== "windows_open";
+    const prearrivalReady = this._callable(e.prearrival) && !["inactive", "disabled", "windows_open"].includes(eff);
     const windowsReady = this._available(e.windows);
     const windowsOn = windowsReady && this._state(e.windows)?.state === "on";
     const resumeReady = this._callable(e.resume);
@@ -306,15 +366,19 @@ class ClimadoCard extends LitElement {
     const canResume = !!(holdUntil || preUntil);
     const bigTemp = holdTemp != null ? holdTemp : target;
     const bigLabel = holdTemp != null ? "Hold" : regulating === "bedroom" ? "Bedroom target" : "Target";
-    const title = unavailable ? "Unavailable" : this._humanMode(eff);
+    const title = unavailable ? "Unavailable" : reason === "thermostat_off" ? "System off" : reason === "system_mode_pending" ? "Waiting" : this._humanMode(eff);
     const subtitle = unavailable
       ? "Waiting for Climado to report its state"
-      : this._humanReason(reason);
+      : this._humanReason(reason, heating);
     const timedOverride = overrideUntil && (mode === "home" || mode === "sleep");
     const controlLabel = mode === "auto"
       ? "Auto control"
       : `Override: ${this._humanMode(mode)}${timedOverride ? ` until ${this._fmt(overrideUntil)}` : ""}`;
     const hvacInfo = this._hvacInfo(hvac);
+    const running = a("running_source");
+    const selected = a("selected_source");
+    const equipmentLabel = running && running !== "unknown" ? this._fuelLabel(running) : hvacInfo.label;
+    const advisory = this._state(e.fuel_recommendation)?.attributes;
     const commandPending = a("command_pending") === true || a("windows_pending") === true;
     const commandError = a("command_error") || a("windows_error");
 
@@ -339,6 +403,9 @@ class ClimadoCard extends LitElement {
           </div>
         </div>
 
+        ${(a("heating_alerts")?.issues || []).map(issue => html`<div class="heating-alert" role="alert"><ha-icon icon="mdi:alert-outline"></ha-icon><span>${issue.message}</span></div>`)}
+        ${a("heating_alerts")?.monitoring === "unavailable" ? html`<div class="control-note">Heating monitoring unavailable: indoor readings are missing or stale</div>` : ""}
+
         <div class="rooms">
           ${mainT != null
             ? html`<div class="room ${regulating === "main" ? "reg" : ""}">
@@ -351,10 +418,18 @@ class ClimadoCard extends LitElement {
               </div>`
             : ""}
           <div class="room">
-            <span class="rval ${hvacInfo.active ? "cooling" : ""}">${hvacInfo.label}</span>
-            <span class="rlbl">AC</span>
+            <span class="rval ${hvacInfo.active ? "cooling" : ""}">${equipmentLabel}</span>
+            <span class="rlbl">${heating ? "Manual fuel" : a("hvac_mode") && a("hvac_mode") !== "cool" ? "HVAC" : "AC"}</span>
           </div>
         </div>
+
+        ${heating && selected
+          ? html`<div class="control-note">Selected: ${this._fuelLabel(selected)} · Manual fuel selection</div>`
+          : ""}
+        ${this._renderFuelAdvisory(advisory)}
+
+        ${this._renderSystemControls(e)}
+        ${this._renderHeatingTargets(e)}
 
         ${nextT && nextT.at
           ? html`<div class="next">${this._nextText(nextT)}</div>`
@@ -370,7 +445,7 @@ class ClimadoCard extends LitElement {
             ? html`<span class="chip ${presence === "occupied" ? "ok" : "warn"}">${presence}</span>`
             : html`<span class="chip muted">Presence unavailable</span>`}
           ${preUntil
-            ? html`<span class="chip pre">pre-cool → ${this._fmt(preUntil)}</span>`
+            ? html`<span class="chip pre">${heating ? "preheat" : "pre-cool"} → ${this._fmt(preUntil)}</span>`
             : ""}
           ${holdUntil
             ? html`<span class="chip hold">hold → ${this._fmt(holdUntil)}</span>`
@@ -493,25 +568,124 @@ class ClimadoCard extends LitElement {
         away: "Away",
         home: "Home",
         vacation: "Vacation",
-        disabled: "Off",
+        disabled: "Control disabled",
         unavailable: "Unavailable",
+        inactive: "Inactive",
         windows_open: "Windows open",
       }[m] || (m || "").replace(/_/g, " ")
     );
   }
 
-  _humanReason(reason) {
+  _renderSystemControls(e) {
+    const system = this._systemState(e);
+    if (!system?.entry_id || !this.hass.services?.climado?.set_system_mode) return html``;
+    const heating = system.hvac_mode === "heat";
+    const source = heating ? system.heat_source : this._heatSource;
+    const sourceReady = system.can_start && system.source_available && system.modes?.includes("heat") && !this._systemBusy;
+    const error = this._systemError || system.error;
+    const status = this._systemBusy ? "Sending system command" : system.pending ? "Waiting for thermostat confirmation" : system.blocked_reason;
+    return html`<section class="system-controls" aria-label="System controls">
+      <div class="system-label">System mode</div>
+      <div class="segments" role="group" aria-label="System mode">
+        ${[["off", "Off", "mdi:power"], ["cool", "Cool", "mdi:snowflake"], ["heat", "Heat", "mdi:fire"]].map(([value, label, icon]) => html`
+          <button class="segment ${system.hvac_mode === value ? "selected" : ""}"
+            aria-label=${`System ${label}`} aria-pressed=${system.hvac_mode === value}
+            ?disabled=${!this._canSetSystem(system, value)}
+            title=${value === "heat" ? `Start heating with ${this._fuelLabel(this._heatSource)}` : label}
+            @click=${() => this._setSystemMode(e, value)}>
+            <ha-icon .icon=${icon}></ha-icon><span>${label}</span>
+          </button>`)}
+      </div>
+      <div class="system-label">${heating ? "Heating source" : "Next heating source"}</div>
+      <div class="segments" role="group" aria-label="Heating source">
+        ${[["heat_pump", "Heat pump", "mdi:heat-pump"], ["gas", "Gas furnace", "mdi:fire"], ["auto", "Automatic", "mdi:auto-mode"]].map(([value, label, icon]) => html`
+          <button class="segment ${source === value ? "selected" : ""}"
+            aria-label=${`Heating source ${label}`} aria-pressed=${source === value}
+            ?disabled=${!sourceReady || value === "auto"}
+            title=${value === "auto" ? "Automatic fuel selection is not available" : label}
+            @click=${() => this._chooseHeatSource(e, value)}>
+            <ha-icon .icon=${icon}></ha-icon><span>${label}</span>
+          </button>`)}
+      </div>
+      ${!system.source_available ? html`<div class="control-note">Heating source unavailable</div>` : ""}
+      ${status ? html`<div class="control-note" role="status">${status}</div>` : ""}
+      ${error ? html`<div class="system-error" role="alert">${error}</div>` : ""}
+    </section>`;
+  }
+
+  _renderHeatingTargets(e) {
+    const targets = [["heat_home", "Home"], ["heat_away", "Away"], ["heat_vacation", "Vacation"], ["heat_prearrival", "Pre-arrival"]].filter(([key]) => e[key]);
+    if (!targets.length) return html``;
+    return html`<details class="heating-targets"><summary>Heating targets</summary>
+      <div class="target-inputs">${targets.map(([key, label]) => html`<label>${label} (°C)
+        <input type="number" aria-label=${`Heating ${label} target`} .value=${this._available(e[key]) ? this._state(e[key]).state : ""}
+          min=${this._attr(e[key], "min") ?? 10} max=${this._attr(e[key], "max") ?? 28} step=${this._attr(e[key], "step") ?? .5}
+          ?disabled=${!this._available(e[key])} @change=${event => this._setHeatingTarget(e[key], event.target)}>
+      </label>`)}</div><div class="control-note">Sleep: Ecobee comfort setting</div>
+      ${this._systemError ? html`<div class="system-error" role="alert">${this._systemError}</div>` : ""}
+    </details>`;
+  }
+
+  _fuelLabel(source) {
+    return ({ heat_pump: "Heat pump", gas: "Gas furnace", mixed: "Multiple sources",
+      cooling: "Cooling", fan: "Fan only", idle: "Idle", off: "Off", unknown: "Unknown" })[source] || "Unknown";
+  }
+
+  _renderFuelAdvisory(data) {
+    if (!data || data.status === "disabled") return "";
+    const labels = {
+      outdoor_temp_sensor: "outdoor sensor", prices_consistent: "matching price basis",
+      electricity_prices: "electricity prices", electricity_valid_from: "electricity start date",
+      electricity_valid_until: "electricity end date", electricity_source: "electricity price source",
+      gas_blocks: "gas prices", gas_valid_from: "gas start date", gas_valid_until: "gas end date",
+      gas_source: "gas price source", gas_kwh_per_m3: "gas energy conversion",
+      furnace_efficiency: "furnace efficiency", furnace_aux_kwh_per_heat_kwh: "blower electricity",
+      cop_points: "heat-pump performance table", cop_source: "performance data source",
+    };
+    const reasons = {
+      outdoor_unavailable: "Outdoor sensor unavailable", outdoor_stale: "Outdoor reading is stale",
+      outdoor_unit: "Outdoor sensor must report Celsius", electricity_tariff_expired: "Electricity prices outside their valid dates",
+      gas_tariff_expired: "Gas prices outside their valid dates", outside_cop_range: "Outside the performance table temperature range",
+      invalid_inputs: "Cost inputs need attention",
+    };
+    if (data.status !== "ready") {
+      const message = data.reason === "missing_inputs"
+        ? `Needed: ${(data.missing_inputs || []).map(key => labels[key] || key).join(", ")}`
+        : reasons[data.reason] || "Cost estimate unavailable";
+      return html`<section class="fuel-advisory"><div class="fuel-heading">Heating cost estimate</div><div class="control-note">${message}</div></section>`;
+    }
+    const cost = value => numericValue(value) == null ? "—" : (Number(value) * 100).toFixed(2);
+    const gas = data.furnace_per_kwh_min === data.furnace_per_kwh_max
+      ? cost(data.furnace_per_kwh_min)
+      : `${cost(data.furnace_per_kwh_min)}–${cost(data.furnace_per_kwh_max)}`;
+    return html`<section class="fuel-advisory">
+      <div class="fuel-heading">Heating cost estimate <span>Advisory only</span></div>
+      <div class="fuel-costs"><div><span>Heat pump</span><strong>${cost(data.heat_pump_per_kwh)}</strong></div><div><span>Gas furnace</span><strong>${gas}</strong></div></div>
+      <div class="control-note">CAD cents/kWh of delivered heat · Outside ${this._temp(data.outdoor_c)} · COP ${Number(data.estimated_cop).toFixed(2)}</div>
+      <div class="fuel-result">${data.preferred_source ? `${this._fuelLabel(data.preferred_source)} estimated cheaper` : "Costs too close to favour a source"}</div>
+      ${data.gas_usage_known === false ? html`<div class="control-note">Gas price range: billing-period usage unavailable</div>` : ""}
+    </section>`;
+  }
+
+  _humanReason(reason, heating = false) {
     if (!reason) return "Waiting for Climado to report its state";
     const map = {
       vacation: "Vacation setback",
-      windows_open: "Heating and cooling paused; fan unchanged",
-      windows_restoring: "Restoring thermostat mode",
       manual_away: "Away (manual)",
       away: "Away — nobody home",
       pre_arrival: "Pre-cooling for your arrival",
+      pre_arrival_heat: "Preheating for your arrival",
+      heating_not_enabled: "Heating targets are not enabled",
+      system_mode_pending: "Waiting for thermostat mode confirmation",
+      thermostat_off: "Thermostat is off",
+      windows_open: "Heating and cooling paused; fan unchanged",
+      windows_restoring: "Restoring thermostat mode",
+      thermostat_mode_changed: "Thermostat mode changed",
+      unsupported_hvac_mode: "Thermostat mode unavailable or unsupported",
+      unsupported_temperature_unit: "Heating requires Celsius thermostat units",
       manual_hold: "Respecting your manual change",
       manual_sleep: "Sleep (manual)",
-      "night/ecobee-sleep": "Overnight — cooling the bedroom",
+      "night/ecobee-sleep": heating ? "Overnight bedroom comfort" : "Overnight — cooling the bedroom",
       "night/fallback": "Overnight",
       disabled: "Climado is off",
     };
@@ -580,6 +754,31 @@ class ClimadoCard extends LitElement {
 
   static get styles() {
     return css`
+      .heating-alert { display: flex; align-items: flex-start; gap: 8px; padding: 10px 0; border-top: 2px solid var(--warning-color, #b57600); font-size: 13px; overflow-wrap: anywhere; }
+      .heating-alert ha-icon { flex: 0 0 24px; color: var(--warning-color, #b57600); }
+      .heating-targets summary { cursor: pointer; font-size: 14px; font-weight: 600; padding: 6px 0; }
+      .target-inputs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 10px 0; }
+      .target-inputs label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; min-width: 0; }
+      .target-inputs input { box-sizing: border-box; width: 100%; min-width: 0; height: 40px; font: inherit; font-size: 16px; background: var(--card-background-color, white); color: var(--primary-text-color); border: 1px solid var(--divider-color); border-radius: 4px; padding: 6px; }
+      .system-controls { padding: 12px 0; border-top: 1px solid var(--divider-color); border-bottom: 1px solid var(--divider-color); }
+      .system-label { font-size: 13px; font-weight: 600; margin: 0 0 6px; }
+      .segments { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin-bottom: 12px; border: 1px solid var(--divider-color); border-radius: 6px; overflow: hidden; }
+      .segment { min-width: 0; min-height: 64px; border: 0; border-right: 1px solid var(--divider-color); border-radius: 0; padding: 8px 4px; background: var(--card-background-color, white); color: var(--primary-text-color); font: inherit; font-size: 13px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; cursor: pointer; }
+      .segment:last-child { border-right: 0; }
+      .segment ha-icon { --mdc-icon-size: 20px; width: 20px; height: 20px; }
+      .segment span { overflow-wrap: anywhere; }
+      .segment:disabled { cursor: default; color: var(--secondary-text-color); opacity: .65; }
+      .segment.selected, .segment.selected:disabled { background: var(--primary-color); color: var(--text-primary-color, white); opacity: 1; }
+      .segment:focus-visible { outline: 2px solid var(--primary-text-color); outline-offset: -3px; }
+      .system-error { font-size: 13px; color: var(--error-color, #b71c1c); overflow-wrap: anywhere; margin-top: 6px; }
+      .fuel-advisory { border-top: 1px solid var(--divider-color); border-bottom: 1px solid var(--divider-color); padding: 12px 0; margin: 12px 0; overflow-wrap: anywhere; }
+      .fuel-heading { font-size: 14px; font-weight: 600; display: flex; flex-wrap: wrap; gap: 8px; justify-content: space-between; }
+      .fuel-heading span { font-weight: 400; color: var(--secondary-text-color); }
+      .fuel-costs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 10px 0; }
+      .fuel-costs > div { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+      .fuel-costs span { color: var(--secondary-text-color); font-size: 13px; }
+      .fuel-costs strong { font-size: 18px; }
+      .fuel-result { margin-top: 8px; font-size: 14px; }
       ha-card {
         padding: 16px;
         display: flex;
@@ -816,6 +1015,7 @@ class ClimadoCard extends LitElement {
         grid-template-columns: repeat(24, 1fr);
         flex: 1;
         height: 26px;
+        min-height: 26px;
         border-radius: 6px;
         overflow: hidden;
       }
@@ -937,4 +1137,4 @@ window.customCards.push({
   documentation: "https://github.com/tvanbave/climado",
 });
 
-console.info("%c CLIMADO-CARD %c 0.3.17 ", "background:#1565c0;color:#fff", "");
+console.info("%c CLIMADO-CARD %c 0.4.0b1 ", "background:#1565c0;color:#fff", "");

@@ -1,13 +1,40 @@
+set_system_mode:
+  name: Set system mode
+  description: >-
+    Explicit manual thermostat command for one Climado entry. Start from Off
+    with fresh idle equipment feedback. Gas selects Ecobee Aux-only and starts
+    heating; heat_pump selects explicit Heat. Fan settings are unchanged.
+    Blocked during Windows open or restoration. No automatic fuel selection.
+  fields:
+    entry_id:
+      name: Climado entry
+      required: true
+      selector:
+        config_entry:
+          integration: climado
+    hvac_mode:
+      name: System mode
+      required: true
+      selector:
+        select:
+          options: ["off", "cool", "heat"]
+    heat_source:
+      name: Heating source
+      description: Required for Heat; omit for Off and Cool.
+      selector:
+        select:
+          options: ["heat_pump", "gas"]
+
 start_pre_arrival:
   name: Start pre-arrival
   description: >-
-    Begin cooling ahead of arrival ("Early-On"). Overrides Away until you get
+    Begin heating or cooling ahead of arrival ("Early-On"). Overrides Away until you get
     home or the lead window elapses. Omitted fields fall back to the configured
     defaults.
   fields:
     lead_minutes:
       name: Lead minutes
-      description: How long to pre-cool before the window expires.
+      description: How long to heat or cool before the window expires.
       selector:
         number:
           min: 0
@@ -16,7 +43,7 @@ start_pre_arrival:
           unit_of_measurement: min
     target:
       name: Target temperature
-      description: Cooling setpoint to drive toward during pre-arrival.
+      description: Setpoint in Celsius for the currently selected heating or cooling mode.
       selector:
         number:
           min: 10
@@ -25,23 +52,32 @@ start_pre_arrival:
           unit_of_measurement: "°C"
     only_if_above:
       name: Only if above
-      description: Skip if the house is at or below this temperature.
+      description: Cooling only. Skip if the house is at or below this temperature.
       selector:
         number:
           min: 10
           max: 40
           step: 0.5
           unit_of_measurement: "°C"
+    only_if_below:
+      name: Only if below
+      description: Heating only. Skip if the house is at or above this temperature; defaults to the heating pre-arrival target.
+      selector:
+        number:
+          min: 10
+          max: 28
+          step: 0.5
+          unit_of_measurement: "°C"
     force:
       name: Force
-      description: Engage even if the house is below the only-if-above threshold.
+      description: Bypass the temperature threshold, but not disabled control or unsupported modes.
       default: false
       selector:
         boolean:
 
 clear_pre_arrival:
   name: Clear pre-arrival
-  description: Cancel an active pre-arrival pre-cool and recompute immediately.
+  description: Cancel active pre-arrival heating or cooling and recompute immediately.
 
 set_rate_plan:
   name: Set rate plan

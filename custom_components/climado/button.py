@@ -34,7 +34,7 @@ class _BaseButton(CoordinatorEntity, ButtonEntity):
 
 
 class ClimadoPreArrivalButton(_BaseButton):
-    """Start cooling ahead of arrival (uses configured defaults)."""
+    """Start seasonal pre-arrival; retain the legacy name for entity IDs."""
 
     _attr_name = "Heading home (pre-cool)"
     _attr_icon = "mdi:home-clock"

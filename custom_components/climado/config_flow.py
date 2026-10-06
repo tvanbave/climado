@@ -15,12 +15,21 @@ from homeassistant import config_entries
 from homeassistant.core import callback
 from homeassistant.helpers import selector
 
+from .advisory import validate_cost_config
+from .cost_config import cost_schema
+
 from .const import (
+    CONF_ALERTS_ENABLED,
+    CONF_ALERT_NOTIFICATIONS,
     CONF_AWAY_DELAY,
     CONF_AWAY_TEMP,
     CONF_BEDROOM_TEMP_SENSOR,
     CONF_CLIMATE_ENTITY,
     CONF_COMFORT_HOME,
+    CONF_HEATING_ENABLED,
+    CONF_AUX_HEAT_SWITCH,
+    CONF_OUTDOOR_TEMP_SENSOR,
+    CONF_HEAT_COST,
     CONF_MAIN_TEMP_SENSOR,
     CONF_NAME,
     CONF_NIGHT_END,
@@ -86,6 +95,11 @@ def _build_schema(current: dict) -> vol.Schema:
             vol.Optional(CONF_PRESENCE_ENTITIES, default=current.get(CONF_PRESENCE_ENTITIES, [])): _entity(["device_tracker", "person"], multiple=True),
             vol.Optional(CONF_OCCUPANCY_ENTITIES, default=current.get(CONF_OCCUPANCY_ENTITIES, [])): _entity("binary_sensor", multiple=True),
             vol.Optional(CONF_WORKDAY_SENSOR, default=dft(CONF_WORKDAY_SENSOR, None)): _entity("binary_sensor"),
+            vol.Optional(CONF_HEATING_ENABLED, default=False): selector.BooleanSelector(),
+            vol.Optional(CONF_ALERTS_ENABLED, default=True): selector.BooleanSelector(),
+            vol.Optional(CONF_ALERT_NOTIFICATIONS, default=True): selector.BooleanSelector(),
+            vol.Optional(CONF_AUX_HEAT_SWITCH): _entity("switch"),
+            vol.Optional(CONF_OUTDOOR_TEMP_SENSOR): _entity("sensor", device_class="temperature"),
             vol.Optional(CONF_COMFORT_HOME, default=dft(CONF_COMFORT_HOME, DEFAULT_COMFORT_HOME)): _num(10, 33.5, 0.5, "°C"),
             vol.Optional(CONF_AWAY_TEMP, default=dft(CONF_AWAY_TEMP, DEFAULT_AWAY_TEMP)): _num(10, 33.5, 0.5, "°C"),
             vol.Optional(CONF_VACATION_TEMP, default=dft(CONF_VACATION_TEMP, DEFAULT_VACATION_TEMP)): _num(10, 33.5, 0.5, "°C"),
@@ -123,6 +137,12 @@ def _structural_schema(current: dict) -> vol.Schema:
             vol.Optional(CONF_PRESENCE_ENTITIES, default=current.get(CONF_PRESENCE_ENTITIES, [])): _entity(["device_tracker", "person"], multiple=True),
             vol.Optional(CONF_OCCUPANCY_ENTITIES, default=current.get(CONF_OCCUPANCY_ENTITIES, [])): _entity("binary_sensor", multiple=True),
             vol.Optional(CONF_WORKDAY_SENSOR, default=dft(CONF_WORKDAY_SENSOR, None)): _entity("binary_sensor"),
+            vol.Optional(CONF_HEATING_ENABLED, default=current.get(CONF_HEATING_ENABLED, False)): selector.BooleanSelector(),
+            vol.Optional(CONF_ALERTS_ENABLED, default=current.get(CONF_ALERTS_ENABLED, True)): selector.BooleanSelector(),
+            vol.Optional(CONF_ALERT_NOTIFICATIONS, default=current.get(CONF_ALERT_NOTIFICATIONS, True)): selector.BooleanSelector(),
+            vol.Optional(CONF_AUX_HEAT_SWITCH, default=dft(CONF_AUX_HEAT_SWITCH, None)): _entity("switch"),
+            vol.Optional(CONF_OUTDOOR_TEMP_SENSOR, default=dft(CONF_OUTDOOR_TEMP_SENSOR, None)): _entity("sensor", device_class="temperature"),
+            vol.Optional("configure_heat_cost", default=False): selector.BooleanSelector(),
         }
     )
 
@@ -152,17 +172,40 @@ class ClimadoOptionsFlow(config_entries.OptionsFlow):
 
     def __init__(self, config_entry) -> None:
         self._entry = config_entry
+        self._pending_options = None
 
     async def async_step_init(self, user_input: dict | None = None):
         if user_input is not None:
+            user_input = dict(user_input)
+            configure_cost = user_input.pop("configure_heat_cost", False)
             # Preserve non-form option keys (e.g. the saved rate plan) — replacing
             # options wholesale with just the structural fields would silently
             # wipe a custom schedule saved via climado.set_rate_plan.
             preserved = {
                 k: v
                 for k, v in self._entry.options.items()
-                if k not in STRUCTURAL_KEYS
+                if k not in STRUCTURAL_KEYS or k == CONF_HEAT_COST
             }
-            return self.async_create_entry(title="", data={**preserved, **user_input})
+            self._pending_options = {**preserved, **user_input}
+            if configure_cost:
+                return await self.async_step_heat_cost()
+            return self.async_create_entry(title="", data=self._pending_options)
         current = {**self._entry.data, **self._entry.options}
         return self.async_show_form(step_id="init", data_schema=_structural_schema(current))
+
+    async def async_step_heat_cost(self, user_input=None):
+        current = (self._pending_options or {}).get(CONF_HEAT_COST, {})
+        errors = {}
+        detail = ""
+        if user_input is not None:
+            try:
+                user_input = cost_schema({})(user_input)
+                validate_cost_config(user_input)
+            except (ValueError, TypeError, KeyError, IndexError, vol.Invalid) as err:
+                errors["base"] = "invalid_heat_cost"
+                detail = str(err)
+                current = user_input
+            else:
+                return self.async_create_entry(title="", data={**self._pending_options, CONF_HEAT_COST: user_input})
+        return self.async_show_form(step_id="heat_cost", data_schema=cost_schema(current), errors=errors,
+                                    description_placeholders={"detail": detail})

@@ -128,6 +128,11 @@ card reads the live plan back from the rate-tier sensor, and **Reset** reverts t
 the saved plan. On-peak coast and pre-cool lead/depth remain device number entities.
 
 ## Roadmap
+- **Next feature release: proposed v0.4.0** Heating profiles and dual-fuel
+  readiness. Automatic heat-pump/gas selection is gated on verified equipment
+  details and controls. See the [heating release plan](docs/releases/0.4.0-heating-plan.md)
+  for scope, implementation order and acceptance checks. This is planned, not
+  part of the current cooling-only release.
 - Reliability first: regression tests and command/status diagnostics are included
   in 0.3.15. See [CHANGELOG.md](CHANGELOG.md) for the release details.
 - **M2 [done]** Editable rate-plan schedules persisted via `climado.set_rate_plan`
@@ -162,6 +167,129 @@ With the integration loaded:
 - Press **Heading home** and confirm `pre_arrival` engages and expires on arrival.
 
 ## Development checks
+### Heating pre-release (0.4.0b1)
+
+Version v0.4.0b1 is a heating pre-release, not a stable release. Live equipment
+validation remains pending. It targets the tested HA 2026.9+ runtime.
+Existing installations remain cooling-only unless heating targets are
+explicitly enabled in Configure. Review the separate device Configuration
+numbers first: Heating Home (20 C), Away (17 C), Vacation (15 C), and pre-arrival
+(20 C). These are editable starting values, not confirmed preferences for your
+home. Night control uses Ecobee's own Sleep heating target and assigned sensors.
+
+Heating currently requires Celsius thermostat units. It follows the selected
+`heat` mode and leaves fuel selection untouched; `heat_cool` is unsupported.
+No heating rate offsets or automatic furnace fallback are provided. Turning
+off heating support releases Climado's hold via Ecobee's native resume service;
+that does not reset or change a manually selected Aux source.
+
+The existing pre-arrival button ID is retained. In heating mode it uses the
+heating target; the service accepts `only_if_below` instead of cooling's
+`only_if_above`. Supplying a threshold for the wrong mode fails explicitly.
+Conditional pre-arrival requires an available temperature; the button bypasses
+that condition but not disabled control or unsupported thermostat modes.
+
+Heating options now include an Auxiliary heat only switch picker. When omitted,
+Climado discovers the enabled Ecobee Aux switch on the thermostat's device.
+An unavailable switch reports Unknown; selected fuel and actual running
+equipment are separate sensors. Heat/Aux changes clear stale target tracking.
+
+The card now has separate **System mode** (Off / Cool / Heat) and **Heating
+source** controls. These are distinct from the Auto/Home/Away/Sleep/Vacation
+comfort profiles. With the system Off, **Next heating source** selects Heat
+pump or Gas furnace locally without starting equipment; press Heat to start
+that source. The draft defaults to Heat pump on a fresh card load and is not a
+persisted backend preference. Turning off heating through this card retains
+the observed source as its next local choice. **Automatic** remains disabled.
+
+Active systems must be switched Off before changing system mode or source.
+Starts require supported modes, an available Aux switch for heating, and fresh
+thermostat feedback (under 10 minutes) showing no active heating or cooling;
+fan-only operation is allowed and fan settings are untouched. Controls are
+blocked throughout a Windows open pause/restoration. Off remains available
+to cancel a pending start, except during that Windows-owned pause.
+
+Manual requests use `climado.set_system_mode` with `entry_id`, `hvac_mode`, and
+`heat_source` (`heat_pump` or `gas`, required only for Heat). Gas uses Ecobee's
+Aux ON command, which selects Aux-only and starts heating. Heat pump uses
+explicit climate Heat, never Aux OFF because that can restore a previous
+`heat_cool` mode. Reported state confirms commands; until confirmation, comfort
+target writes are suspended. After five minutes an unconfirmed request reports
+an error with no automatic retry. This is manual operation using Ecobee's own
+equipment protections, not a validated automatic dual-fuel handoff controller.
+Heating target automation remains separately opt-in; these manual mode controls
+do not enable it. Older installed backends do not show unsupported controls.
+
+Pending manual system requests are saved before sending and restored after an
+HA restart without replaying the command. Storage failures prevent new mode
+commands. Windows open cancels a pending manual request and retains pause
+ownership. The card has expandable Heating targets using the existing number
+entities, and distinguishes System off from Control disabled and Waiting.
+
+### Heating alerts
+
+Monitoring and HA notifications default to enabled and can be independently
+disabled in Configure. Thresholds are Configuration number entities:
+
+- Windows open and any fresh configured indoor sensor below 16 C for 10 minutes.
+- Thermostat command failure or a manual mode request unconfirmed after five minutes.
+- Reported continuous heating for 60 minutes with less than 0.3 C rise, while
+  still more than 0.5 C below target.
+
+Checks run at least once a minute while heating or paused. Temperature checks
+require Celsius readings reported within 15 minutes. Progress monitoring uses
+the thermostat's control temperature; a source/target/preset/sensor change, stop,
+restart or observation gap resets its baseline. These checks flag symptoms, not
+a diagnosis of equipment failure. Short heating cycles do not accumulate toward
+the continuous-run check. Missing readings are shown as monitoring unavailable.
+Notifications are emitted once per active issue, dismissed on resolution, and
+can be muted without hiding card alerts. They appear in HA, not as phone push.
+Alerts never resume HVAC, switch fuel or cancel Windows open. They are not an
+independent freeze-protection system and cannot run while HA is down.
+
+### Cost observations
+
+Choose **Configure heating cost estimates** in the options flow to enter dated
+ULO electricity prices, marginal gas-price blocks, gas energy conversion,
+furnace efficiency, blower electricity and a matched-system COP table. Table
+rows have native numeric fields; no configuration.yaml edits are needed. The
+last gas block has no upper limit, and COP rows must be ordered by increasing
+outdoor temperature. Valid-until dates are exclusive. Incomplete setup can be
+saved, and the card names the missing inputs. No prices or COP values are
+silently selected for the installation.
+
+Select an outdoor Celsius sensor in the main options. Its last reported time,
+rather than its last value change, determines freshness. Changed readings and
+exact rate boundaries update estimates; a one-minute freshness check handles
+unchanged reports and stale-data recovery. Unknown billing-period gas usage
+produces a cost range. The optional gas sensor must track total consumption for
+the current billing period in m3, including other gas appliances, and reset at
+the correct billing boundary. Stale/invalid usage widens the range rather than
+choosing an unsupported price block.
+
+The card shows selected fuel, observed equipment, estimated COP and delivered
+heat costs in CAD cents/kWh. Recommendations use a configurable savings margin
+and never change fuel. Costs remain available while Climado control is off or
+Windows open is active. Expired tariffs, stale outdoor readings and temperatures
+outside the supplied COP table clear cost estimates. Use consistent tax/rebate
+bases, include variable charges, and exclude fixed monthly charges.
+
+The recommendation sensor includes its reason, selected source and an
+observation-only flag. HA Recorder can retain this history if the entity is not
+excluded; INFO logs also record changes to recommendation/status/reason/source
+without logging every unchanged sample. No estimated savings or fuel commands
+are derived from missing inputs. See `docs/releases/0.4.0b1-checklist.md` for the
+publication and supervised equipment checks that remain.
+
+`fuel_policy.py` is a pure simulation of eligibility, comfort requirements,
+minimum dwell and manual-override rules. It has no service adapter or automatic
+switching option. Equipment capacity, interlocks, minimum on/off times, confirmed
+handoff, persisted transitions and failure fallback still need implementation
+and supervised validation. The historical Union South M1 gas preset expires
+October 1, 2026. Research and outstanding equipment inputs are in the release plan.
+
+### Test commands
+
 Use Python 3.14 for the current Home Assistant test runtime:
 
 ```sh

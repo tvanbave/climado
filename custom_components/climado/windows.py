@@ -1,17 +1,19 @@
 """Persistent, explicit HVAC pause. Fan settings are never changed."""
 from datetime import timedelta
 
-from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
+
+from .fuel import find_aux_entity
 
 
 class WindowsPause:
     """Own only the HVAC-off request and its corresponding mode restoration."""
 
-    def __init__(self, hass, climate_entity, entry_id):
+    def __init__(self, hass, climate_entity, entry_id, aux_entity=None):
         self.hass = hass
         self.climate_entity = climate_entity
+        self.aux_entity = aux_entity
         self.active = False
         self.restore = None
         self.error = None
@@ -61,18 +63,7 @@ class WindowsPause:
             raise
 
     def _aux_entity(self):
-        registry = er.async_get(self.hass)
-        climate = registry.async_get(self.climate_entity)
-        if not climate or not climate.device_id:
-            return None
-        matches = [
-            entry.entity_id for entry in er.async_entries_for_device(registry, climate.device_id)
-            if entry.domain == "switch" and entry.platform == "ecobee"
-            and entry.unique_id.endswith("_aux_heat_only")
-        ]
-        if len(matches) > 1:
-            raise ValueError("Cannot identify a unique auxiliary heat switch")
-        return matches[0] if matches else None
+        return self.aux_entity or find_aux_entity(self.hass, self.climate_entity)
 
     def _aux_state(self, entity_id):
         state = self.hass.states.get(entity_id) if entity_id else None
