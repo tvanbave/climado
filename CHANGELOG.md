@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.4.0b2 - Local Thermostat Feedback
+
+- Add an optional read-only HomeKit feedback thermostat. Fresh local reports
+  can confirm system modes and show target acknowledgements sooner; all writes
+  still use the primary Ecobee integration. Generic local heating never proves
+  which fuel is selected or running.
+- Keep cloud equipment-stop guards, require a new Aux report to confirm a local
+  heating request's fuel, and pause comfort writes while local/cloud modes differ.
+  Missing or stale local reports fall back to existing cloud behavior.
+- Add bounded post-command status refreshes through HA's public update service,
+  spaced at least three minutes apart without bypassing Ecobee's throttle.
+  Read failures do not trigger extra equipment commands.
+- Show sending, elapsed confirmation time, local mode versus fuel confirmation,
+  current local activity, feedback age and fallback status in the card.
+
 ## 0.4.0b1 - Heating Pre-release
 
 Requires Home Assistant 2026.9 or newer. Heating is opt-in; automatic fuel

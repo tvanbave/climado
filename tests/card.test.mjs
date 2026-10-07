@@ -218,3 +218,71 @@ test("heating targets use entity metadata even after an entity is renamed", asyn
   assert.equal(call, undefined);
   assert.equal(input.value, "20");
 });
+
+test("local heat confirmation keeps fuel confirmation distinct and shows elapsed time", () => {
+  const item = systemCard({ can_start: false, request: {
+    mode: "heat", source: "gas", status: "pending", mode_confirmed_locally: true,
+    requested_at: new Date(Date.now() - 65000).toISOString(),
+  }});
+  assert.match(item.render(), /Heat mode confirmed locally; waiting for fuel confirmation \(1m \d+s\)/);
+  item._systemState(item._entities()).request = {
+    mode: "heat", source: "gas", status: "confirmed", confirmation_source: "local + Ecobee fuel",
+  };
+  assert.match(item.render(), /Gas furnace heating mode confirmed \(local \+ Ecobee fuel\)/);
+  assert.doesNotMatch(item.render(), /Gas furnace running/);
+});
+
+test("sending is immediate and does not optimistically change reported mode", async () => {
+  const item = systemCard();
+  let done;
+  item.hass.callService = () => new Promise(resolve => { done = resolve; });
+  const request = item._setSystemMode(item._entities(), "heat");
+  assert.match(item.render(), /Sending heat pump heating request/);
+  assert.equal(item._systemState(item._entities()).hvac_mode, "off");
+  done();
+  await request;
+  assert.equal(item._systemBusy, false);
+});
+
+test("local activity and target confirmation do not infer running fuel or native Sleep", () => {
+  const item = systemCard();
+  Object.assign(item.hass.states["sensor.climado_effective_mode"].attributes, {
+    hvac_action: "idle", running_source: "gas", command_pending: true,
+    thermostat_feedback: { source: "local", fresh: true, hvac_mode: "heat", hvac_action: "heating", target_confirmed_locally: true,
+      reported_at: new Date().toISOString(), local_status: "ready" },
+  });
+  const view = item.render();
+  assert.match(view, /Target confirmed locally; syncing Ecobee/);
+  assert.match(view, /Local feedback: last report \d+s ago/);
+  assert.match(view, />Heating<\/span>/);
+  assert.doesNotMatch(view, /class="rval[^"]*">Gas furnace<\/span>/);
+  assert.doesNotMatch(view, /class="rlbl">AC<\/span>/);
+});
+
+test("stale local feedback falls back visibly and refresh errors are not command failures", () => {
+  const item = systemCard();
+  Object.assign(item.hass.states["sensor.climado_effective_mode"].attributes, {
+    thermostat_feedback: { source: "cloud", fresh: false, local_status: "unavailable_or_stale",
+      reported_at: new Date(Date.now() - 660000).toISOString(), refresh_error: "Cloud unavailable" },
+  });
+  const view = item.render();
+  assert.match(view, /Local feedback unavailable or stale/);
+  assert.match(view, /Ecobee cloud feedback: last report 11m/);
+  assert.match(view, /Status refresh delayed; no equipment command repeated/);
+  assert.doesNotMatch(view, /Thermostat command failed/);
+});
+
+test("Off remains available when the cloud disagrees with local Off", async () => {
+  const item = systemCard({ hvac_mode: "off", cloud_hvac_mode: "heat", can_start: false });
+  await item._setSystemMode(item._entities(), "off");
+  assert.equal(item.calls.length, 1);
+  assert.equal(item.calls[0][2].hvac_mode, "off");
+});
+
+test("cloud Off is not shown as the selected heating source during local mode disagreement", () => {
+  const item = card({ hvac_mode: "off", selected_source: "off", thermostat_feedback: {
+    source: "local", fresh: true, hvac_mode: "heat", hvac_action: "heating", mode_disagreement: true,
+  }});
+  assert.match(item.render(), /Heating source: waiting for Ecobee confirmation/);
+  assert.doesNotMatch(item.render(), /Selected: Off/);
+});

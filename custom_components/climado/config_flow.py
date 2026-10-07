@@ -25,6 +25,7 @@ from .const import (
     CONF_AWAY_TEMP,
     CONF_BEDROOM_TEMP_SENSOR,
     CONF_CLIMATE_ENTITY,
+    CONF_LOCAL_FEEDBACK_ENTITY,
     CONF_COMFORT_HOME,
     CONF_HEATING_ENABLED,
     CONF_AUX_HEAT_SWITCH,
@@ -90,6 +91,7 @@ def _build_schema(current: dict) -> vol.Schema:
         {
             vol.Required(CONF_NAME, default=dft(CONF_NAME, DEFAULT_NAME)): selector.TextSelector(),
             vol.Required(CONF_CLIMATE_ENTITY, default=dft(CONF_CLIMATE_ENTITY, None)): _entity("climate"),
+            vol.Optional(CONF_LOCAL_FEEDBACK_ENTITY, default=dft(CONF_LOCAL_FEEDBACK_ENTITY, None)): _entity("climate"),
             vol.Required(CONF_MAIN_TEMP_SENSOR, default=dft(CONF_MAIN_TEMP_SENSOR, None)): _entity("sensor", device_class="temperature"),
             vol.Optional(CONF_BEDROOM_TEMP_SENSOR, default=dft(CONF_BEDROOM_TEMP_SENSOR, None)): _entity("sensor", device_class="temperature"),
             vol.Optional(CONF_PRESENCE_ENTITIES, default=current.get(CONF_PRESENCE_ENTITIES, [])): _entity(["device_tracker", "person"], multiple=True),
@@ -132,6 +134,7 @@ def _structural_schema(current: dict) -> vol.Schema:
         {
             vol.Required(CONF_NAME, default=dft(CONF_NAME, DEFAULT_NAME)): selector.TextSelector(),
             vol.Required(CONF_CLIMATE_ENTITY, default=dft(CONF_CLIMATE_ENTITY, None)): _entity("climate"),
+            vol.Optional(CONF_LOCAL_FEEDBACK_ENTITY, default=dft(CONF_LOCAL_FEEDBACK_ENTITY, None)): _entity("climate"),
             vol.Required(CONF_MAIN_TEMP_SENSOR, default=dft(CONF_MAIN_TEMP_SENSOR, None)): _entity("sensor", device_class="temperature"),
             vol.Optional(CONF_BEDROOM_TEMP_SENSOR, default=dft(CONF_BEDROOM_TEMP_SENSOR, None)): _entity("sensor", device_class="temperature"),
             vol.Optional(CONF_PRESENCE_ENTITIES, default=current.get(CONF_PRESENCE_ENTITIES, [])): _entity(["device_tracker", "person"], multiple=True),
@@ -154,6 +157,9 @@ class ClimadoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def async_step_user(self, user_input: dict | None = None):
         if user_input is not None:
+            if user_input.get(CONF_LOCAL_FEEDBACK_ENTITY) and user_input.get(CONF_LOCAL_FEEDBACK_ENTITY) == user_input.get(CONF_CLIMATE_ENTITY):
+                return self.async_show_form(step_id="user", data_schema=_build_schema(user_input),
+                                            errors={CONF_LOCAL_FEEDBACK_ENTITY: "same_feedback_entity"})
             await self.async_set_unique_id(user_input[CONF_CLIMATE_ENTITY])
             self._abort_if_unique_id_configured()
             return self.async_create_entry(
@@ -176,7 +182,12 @@ class ClimadoOptionsFlow(config_entries.OptionsFlow):
 
     async def async_step_init(self, user_input: dict | None = None):
         if user_input is not None:
+            if user_input.get(CONF_LOCAL_FEEDBACK_ENTITY) and user_input.get(CONF_LOCAL_FEEDBACK_ENTITY) == user_input.get(CONF_CLIMATE_ENTITY):
+                return self.async_show_form(step_id="init", data_schema=_structural_schema(user_input),
+                                            errors={CONF_LOCAL_FEEDBACK_ENTITY: "same_feedback_entity"})
             user_input = dict(user_input)
+            # Override an initial-setup value when the optional picker is cleared.
+            user_input.setdefault(CONF_LOCAL_FEEDBACK_ENTITY, None)
             configure_cost = user_input.pop("configure_heat_cost", False)
             # Preserve non-form option keys (e.g. the saved rate plan) — replacing
             # options wholesale with just the structural fields would silently

@@ -39,6 +39,7 @@ from .const import (
     CONF_AWAY_TEMP,
     CONF_BEDROOM_TEMP_SENSOR,
     CONF_CLIMATE_ENTITY,
+    CONF_LOCAL_FEEDBACK_ENTITY,
     CONF_COMFORT_HOME,
     CONF_HEATING_ENABLED,
     CONF_AUX_HEAT_SWITCH,
@@ -96,6 +97,7 @@ from .windows import WindowsPause
 from .fuel import aux_selection, find_aux_entity, running_source, selected_source
 from .advisory import heat_advisory
 from .system import SystemControl
+from .feedback import ThermostatFeedback
 from .alerts import HeatingAlerts
 
 _LOGGER = logging.getLogger(__name__)
@@ -164,6 +166,8 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         self._aux_entity = self.opt(CONF_AUX_HEAT_SWITCH)
         self._fuel_discovery_error = None
         self.windows = WindowsPause(hass, self.opt(CONF_CLIMATE_ENTITY), entry.entry_id, self._aux_entity)
+        self.feedback = ThermostatFeedback(self)
+        self.windows.request_refresh = self.feedback.request_refresh
         self.system = SystemControl(self)
         self.alerts = HeatingAlerts(self)
         self._last_fuel_observation = None
@@ -306,7 +310,7 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         watch = list(self.opt(CONF_PRESENCE_ENTITIES, [])) + list(
             self.opt(CONF_OCCUPANCY_ENTITIES, [])
         )
-        for key in (CONF_WORKDAY_SENSOR, CONF_CLIMATE_ENTITY, CONF_MAIN_TEMP_SENSOR, CONF_BEDROOM_TEMP_SENSOR, CONF_OUTDOOR_TEMP_SENSOR):
+        for key in (CONF_WORKDAY_SENSOR, CONF_CLIMATE_ENTITY, CONF_LOCAL_FEEDBACK_ENTITY, CONF_MAIN_TEMP_SENSOR, CONF_BEDROOM_TEMP_SENSOR, CONF_OUTDOOR_TEMP_SENSOR):
             if entity_id := self.opt(key):
                 watch.append(entity_id)
         if self._aux_entity:
@@ -322,6 +326,7 @@ class ClimadoCoordinator(DataUpdateCoordinator):
             )
 
     async def async_unload(self) -> None:
+        await self.feedback.async_close()
         self._cancel_boundary_refresh()
         for unsub in self._unsub:
             unsub()
@@ -336,7 +341,7 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         if old is not None and new is not None and old.state == new.state:
             if event.data.get("entity_id") == self.opt(CONF_OUTDOOR_TEMP_SENSOR):
                 relevant = ("unit_of_measurement",)
-            elif event.data.get("entity_id") == self.opt(CONF_CLIMATE_ENTITY):
+            elif event.data.get("entity_id") in (self.opt(CONF_CLIMATE_ENTITY), self.opt(CONF_LOCAL_FEEDBACK_ENTITY)):
                 relevant = ("temperature", "preset_mode", "hvac_action", "current_temperature", "active_sensors", "aux_heat", "equipment_running")
             else:
                 return
@@ -381,6 +386,8 @@ class ClimadoCoordinator(DataUpdateCoordinator):
             hour=0, minute=0, second=0, microsecond=0
         )
         candidates = [next_at(night_start), next_at(night_end), midnight]
+        if self.opt(CONF_LOCAL_FEEDBACK_ENTITY):
+            candidates.append(now + timedelta(minutes=1))
         if self.opt(CONF_ALERTS_ENABLED, True) and (self.windows.busy or self._hvac_mode() == "heat" or self.system.error):
             candidates.append(now + timedelta(minutes=1))
         if self.system.pending:
@@ -572,6 +579,8 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         return state.state if state else "unavailable"
 
     def _control_blocked(self):
+        if self.feedback.mode_disagrees():
+            return "feedback_mode_mismatch"
         mode = self._hvac_mode()
         if mode not in ("heat", "cool"):
             return "thermostat_off" if mode == "off" else "unsupported_hvac_mode"
@@ -668,12 +677,14 @@ class ClimadoCoordinator(DataUpdateCoordinator):
                 return False
             self._command_error = str(err) or type(err).__name__
             self._retry_at = dt_util.utcnow() + _RETRY_DELAY
+            self.feedback.request_refresh()
             _LOGGER.error("Climado command %s failed: %s", command, err)
             return False
         if context != self._fuel_context():
             self._sync_hvac_context()
             return False
         self._record_command(command, wrote=True)
+        self.feedback.request_refresh()
         self._confirm_pending()
         return self._pending_command is None
 
@@ -909,7 +920,7 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         state["thermostat_target"] = self._climate_attr("temperature")
         state["control_temperature"] = self._climate_attr("current_temperature")
         climate = self.hass.states.get(self.opt(CONF_CLIMATE_ENTITY))
-        state["thermostat_updated_at"] = climate.last_updated.isoformat() if climate else None
+        state["thermostat_updated_at"] = climate.last_reported.isoformat() if climate else None
         # Which sensor the thermostat is regulating right now (bedroom during the
         # ecobee Sleep handoff, else the main-floor thermostat sensor).
         state["regulating"] = "bedroom" if mode == MODE_SLEEP else "main"
@@ -994,6 +1005,8 @@ class ClimadoCoordinator(DataUpdateCoordinator):
     def _state(self, mode, reason, target, tier, occupied, is_night, applied=None, rate_plan=None) -> dict:
         return {
             "system_control": self.system.snapshot(),
+            "thermostat_feedback": self.feedback.snapshot(),
+            "thermostat_updated_at": self.feedback.cloud().last_reported.isoformat() if self.feedback.cloud() else None,
             "hvac_mode": self._hvac_mode(),
             "heating_enabled": self.opt(CONF_HEATING_ENABLED, False),
             "fuel_control": "manual",

@@ -126,6 +126,45 @@ class ClimadoCard extends LitElement {
     return 6;
   }
 
+  connectedCallback() {
+    super.connectedCallback();
+    this._statusTimer = setInterval(() => {
+      if (this.hass && this._config) this.requestUpdate();
+    }, 1000);
+  }
+
+  disconnectedCallback() {
+    clearInterval(this._statusTimer);
+    super.disconnectedCallback();
+  }
+
+  _elapsed(iso) {
+    const at = Date.parse(iso);
+    if (!Number.isFinite(at)) return "";
+    const seconds = Math.max(0, Math.floor((Date.now() - at) / 1000));
+    return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+  }
+
+  _systemStatus(system) {
+    const request = this._systemBusy ? this._sendingRequest : system.request || system.pending;
+    if (!request) return system.blocked_reason;
+    const label = request.mode === "heat" ? `${this._fuelLabel(request.source)} heating` : request.mode === "cool" ? "Cooling" : "Off";
+    const elapsed = this._elapsed(request.requested_at);
+    if (this._systemBusy) return `Sending ${label.toLowerCase()} request`;
+    if (request.status === "failed") return `${label} request not confirmed`;
+    if (request.status === "confirmed") return `${label} mode confirmed (${request.confirmation_source || "Ecobee"})`;
+    if (request.mode_confirmed_locally && request.mode === "heat") return `Heat mode confirmed locally; waiting for fuel confirmation${elapsed ? ` (${elapsed})` : ""}`;
+    return `${label} requested${elapsed ? ` (${elapsed})` : ""}. Waiting for thermostat confirmation`;
+  }
+
+  _feedbackNote(feedback) {
+    if (!feedback) return "";
+    const age = this._elapsed(feedback.reported_at);
+    const source = feedback.source === "local" ? "Local feedback" : "Ecobee cloud feedback";
+    const fallback = feedback.local_status === "unavailable_or_stale" ? "Local feedback unavailable or stale. " : "";
+    return `${fallback}${source}${age ? `: last report ${age} ago` : ""}${feedback.fresh ? "" : " (stale or unavailable)"}`;
+  }
+
   // ---- entity discovery ----
   _entities() {
     const reg = this.hass.entities || {};
@@ -206,7 +245,7 @@ class ClimadoCard extends LitElement {
   _canSetSystem(system, mode) {
     if (!system?.entry_id || this._systemBusy || !this.hass.services?.climado?.set_system_mode) return false;
     if (!system.modes?.includes(mode)) return false;
-    if (mode === "off") return system.can_stop && (system.hvac_mode !== "off" || !!system.pending);
+    if (mode === "off") return system.can_stop && (system.hvac_mode !== "off" || (system.cloud_hvac_mode && system.cloud_hvac_mode !== "off") || !!system.pending);
     return system.can_start && (mode !== "heat" || system.source_available);
   }
 
@@ -221,6 +260,7 @@ class ClimadoCard extends LitElement {
     const system = this._systemState(e);
     if (!this._canSetSystem(system, mode)) return;
     this._systemBusy = true;
+    this._sendingRequest = { mode, source: mode === "heat" ? this._heatSource : null, requested_at: new Date().toISOString() };
     this._systemError = null;
     if (mode === "off" && ["heat_pump", "gas"].includes(system.heat_source)) this._heatSource = system.heat_source;
     const data = { entry_id: system.entry_id, hvac_mode: mode };
@@ -341,9 +381,11 @@ class ClimadoCard extends LitElement {
     const presence = cleanValue(this._state(e.presence)?.state);
     const mainT = numericValue(a("main_temp"));
     const bedT = numericValue(a("bedroom_temp"));
-    const hvac = cleanValue(a("hvac_action"));
+    const feedback = a("thermostat_feedback");
+    const localFeedback = feedback?.source === "local" && feedback.fresh;
+    const hvac = cleanValue(localFeedback ? feedback.hvac_action : a("hvac_action"));
     const cooling = hvac === "cooling";
-    const heating = a("hvac_mode") === "heat";
+    const heating = (localFeedback ? feedback.hvac_mode : a("hvac_mode")) === "heat";
     const regulating = cleanValue(a("regulating"));
     const enableReady = this._available(e.enable);
     const vacationReady = this._available(e.vacation);
@@ -377,7 +419,8 @@ class ClimadoCard extends LitElement {
     const hvacInfo = this._hvacInfo(hvac);
     const running = a("running_source");
     const selected = a("selected_source");
-    const equipmentLabel = running && running !== "unknown" ? this._fuelLabel(running) : hvacInfo.label;
+    // HomeKit heating/idle is not evidence of which fuel is running.
+    const equipmentLabel = localFeedback ? hvacInfo.label : running && running !== "unknown" ? this._fuelLabel(running) : hvacInfo.label;
     const advisory = this._state(e.fuel_recommendation)?.attributes;
     const commandPending = a("command_pending") === true || a("windows_pending") === true;
     const commandError = a("command_error") || a("windows_error");
@@ -394,7 +437,7 @@ class ClimadoCard extends LitElement {
             ${commandError
               ? html`<div class="control-note">Thermostat command failed; retrying</div>`
               : commandPending
-                ? html`<div class="control-note">Waiting for thermostat confirmation</div>`
+                ? html`<div class="control-note">${feedback?.target_confirmed_locally ? "Target confirmed locally; syncing Ecobee" : "Waiting for thermostat confirmation"}</div>`
                 : ""}
           </div>
           <div class="temps">
@@ -423,7 +466,9 @@ class ClimadoCard extends LitElement {
           </div>
         </div>
 
-        ${heating && selected
+        ${heating && feedback?.mode_disagreement
+          ? html`<div class="control-note">Heating source: waiting for Ecobee confirmation</div>`
+          : heating && selected
           ? html`<div class="control-note">Selected: ${this._fuelLabel(selected)} · Manual fuel selection</div>`
           : ""}
         ${this._renderFuelAdvisory(advisory)}
@@ -583,7 +628,8 @@ class ClimadoCard extends LitElement {
     const source = heating ? system.heat_source : this._heatSource;
     const sourceReady = system.can_start && system.source_available && system.modes?.includes("heat") && !this._systemBusy;
     const error = this._systemError || system.error;
-    const status = this._systemBusy ? "Sending system command" : system.pending ? "Waiting for thermostat confirmation" : system.blocked_reason;
+    const status = this._systemStatus(system);
+    const feedback = this._attr(e.effective_mode, "thermostat_feedback");
     return html`<section class="system-controls" aria-label="System controls">
       <div class="system-label">System mode</div>
       <div class="segments" role="group" aria-label="System mode">
@@ -609,6 +655,9 @@ class ClimadoCard extends LitElement {
       </div>
       ${!system.source_available ? html`<div class="control-note">Heating source unavailable</div>` : ""}
       ${status ? html`<div class="control-note" role="status">${status}</div>` : ""}
+      ${feedback ? html`<div class="feedback-note">${this._feedbackNote(feedback)}</div>` : ""}
+      ${feedback?.mode_disagreement ? html`<div class="control-note">Local and cloud modes differ; comfort commands paused</div>` : ""}
+      ${feedback?.refresh_error ? html`<div class="control-note">Status refresh delayed; no equipment command repeated</div>` : ""}
       ${error ? html`<div class="system-error" role="alert">${error}</div>` : ""}
     </section>`;
   }
@@ -677,6 +726,7 @@ class ClimadoCard extends LitElement {
       pre_arrival_heat: "Preheating for your arrival",
       heating_not_enabled: "Heating targets are not enabled",
       system_mode_pending: "Waiting for thermostat mode confirmation",
+      feedback_mode_mismatch: "Waiting for local and cloud modes to agree",
       thermostat_off: "Thermostat is off",
       windows_open: "Heating and cooling paused; fan unchanged",
       windows_restoring: "Restoring thermostat mode",
@@ -771,6 +821,7 @@ class ClimadoCard extends LitElement {
       .segment.selected, .segment.selected:disabled { background: var(--primary-color); color: var(--text-primary-color, white); opacity: 1; }
       .segment:focus-visible { outline: 2px solid var(--primary-text-color); outline-offset: -3px; }
       .system-error { font-size: 13px; color: var(--error-color, #b71c1c); overflow-wrap: anywhere; margin-top: 6px; }
+      .feedback-note { font-size: 12px; color: var(--secondary-text-color); overflow-wrap: anywhere; margin-top: 6px; }
       .fuel-advisory { border-top: 1px solid var(--divider-color); border-bottom: 1px solid var(--divider-color); padding: 12px 0; margin: 12px 0; overflow-wrap: anywhere; }
       .fuel-heading { font-size: 14px; font-weight: 600; display: flex; flex-wrap: wrap; gap: 8px; justify-content: space-between; }
       .fuel-heading span { font-weight: 400; color: var(--secondary-text-color); }
@@ -1137,4 +1188,4 @@ window.customCards.push({
   documentation: "https://github.com/tvanbave/climado",
 });
 
-console.info("%c CLIMADO-CARD %c 0.4.0b1 ", "background:#1565c0;color:#fff", "");
+console.info("%c CLIMADO-CARD %c 0.4.0b2 ", "background:#1565c0;color:#fff", "");

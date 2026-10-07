@@ -226,6 +226,38 @@ commands. Windows open cancels a pending manual request and retains pause
 ownership. The card has expandable Heating targets using the existing number
 entities, and distinguishes System off from Control disabled and Waiting.
 
+### Optional local feedback (0.4.0b2)
+
+After pairing the same Ecobee with HA's **HomeKit Device** integration, choose
+its climate entity in Climado's **Configure > Local feedback thermostat** field.
+Keep the existing Ecobee cloud climate entity as the primary thermostat and
+retain its Auxiliary heat only switch. Leave the new field empty for cloud-only
+operation. The two entities must represent the same physical thermostat.
+
+The local entity is read-only. Climado continues sending every equipment,
+target, and native Sleep command through the existing Ecobee integration.
+Local reports must be available, under ten minutes old, and newer than the
+request to acknowledge it. Fresh local Off/Cool reports can confirm those
+mode requests; Heat also requires a new matching cloud Aux report. A generic
+HomeKit `heating` action never identifies gas versus heat pump.
+
+The card shows request progress and elapsed time, local mode confirmation
+separately from fuel confirmation, observed activity, and the age/source of
+feedback. Numeric targets can show **Target confirmed locally; syncing Ecobee**,
+but native preset/hold confirmation remains cloud-owned. Losing local feedback
+falls back to cloud data with a visible message. Contradictory mode readings
+pause comfort writes; Off remains available. Starting another mode still requires
+fresh cloud equipment-stopped feedback, plus stopped local feedback when available.
+This improves visibility and some confirmations, not the Ecobee cloud's speed.
+
+After a command, Climado requests a status read after about two seconds and
+once more about three minutes later, within a five-minute window. Requests are
+coalesced across commands and spaced at least three minutes apart. The public
+`homeassistant.update_entity` service respects integration throttling, so it
+does not guarantee a new cloud report. Refresh failures are separate from
+command failures and never cause an additional HVAC command. Existing comfort
+target retry behavior is unchanged. Unloading cancels pending reads.
+
 ### Heating alerts
 
 Monitoring and HA notifications default to enabled and can be independently

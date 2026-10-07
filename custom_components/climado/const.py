@@ -4,7 +4,7 @@ from __future__ import annotations
 from homeassistant.const import Platform
 
 DOMAIN = "climado"
-VERSION = "0.4.0b1"
+VERSION = "0.4.0b2"
 
 PLATFORMS = [
     Platform.SELECT,
@@ -18,6 +18,7 @@ PLATFORMS = [
 # ---- Config / options keys ----
 CONF_NAME = "name"
 CONF_CLIMATE_ENTITY = "climate_entity"
+CONF_LOCAL_FEEDBACK_ENTITY = "local_feedback_entity"
 CONF_MAIN_TEMP_SENSOR = "main_temp_sensor"
 CONF_BEDROOM_TEMP_SENSOR = "bedroom_temp_sensor"
 CONF_PRESENCE_ENTITIES = "presence_entities"
@@ -138,6 +139,7 @@ TIME_TUNABLES = [
 
 # Structural keys edited via the options flow (everything else is a device entity)
 STRUCTURAL_KEYS = [
+    CONF_LOCAL_FEEDBACK_ENTITY,
     CONF_AUX_HEAT_SWITCH,
     CONF_OUTDOOR_TEMP_SENSOR,
     CONF_HEAT_COST,

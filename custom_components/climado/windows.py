@@ -19,6 +19,7 @@ class WindowsPause:
         self.error = None
         self.retry_at = None
         self._command = None
+        self.request_refresh = None
         self._store = Store(hass, 1, f"climado.{entry_id}.windows")
 
     @property
@@ -123,6 +124,8 @@ class WindowsPause:
                 "entity_id": self.climate_entity, "hvac_mode": value,
             }
             await self.hass.services.async_call(domain, service, data, blocking=True)
+            if self.request_refresh:
+                self.request_refresh()
             self.error = None
             # Confirmation comes from the next state snapshot, not service success.
             state = self.hass.states.get(self.climate_entity)

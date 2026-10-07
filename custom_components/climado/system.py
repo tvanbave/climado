@@ -16,6 +16,8 @@ class SystemControl:
         self.pending = None
         self.error = None
         self._reported_at = None
+        self._aux_reported_at = None
+        self.last_request = None
         self._store = Store(coordinator.hass, 1, f"climado.{coordinator.entry.entry_id}.system")
         self._saved = None
 
@@ -25,6 +27,8 @@ class SystemControl:
             "aux_entity": self.coordinator._aux_entity,
             "pending": {**self.pending, "until": self.pending["until"].isoformat()} if self.pending else None,
             "reported_at": self._reported_at.isoformat() if self._reported_at else None,
+            "aux_reported_at": self._aux_reported_at.isoformat() if self._aux_reported_at else None,
+            "local_entity": self.coordinator.feedback.snapshot()["configured_entity"],
             "error": self.error,
         }
 
@@ -55,11 +59,24 @@ class SystemControl:
             else:
                 self.pending = {**request, "until": until}
                 self._reported_at = reported
+                raw_aux = saved.get("aux_reported_at")
+                self._aux_reported_at = dt_util.parse_datetime(raw_aux) if isinstance(raw_aux, str) else None
+                if self._aux_reported_at and self._aux_reported_at.tzinfo is None:
+                    self._aux_reported_at = None
+                # A changed feedback entity cannot confirm an earlier request.
+                if saved.get("local_entity") != self.coordinator.feedback.snapshot()["configured_entity"]:
+                    self.pending.pop("requested_at", None)
+                if self.pending.get("requested_at"):
+                    raw_requested = self.pending["requested_at"]
+                    parsed = dt_util.parse_datetime(raw_requested) if isinstance(raw_requested, str) else None
+                    if parsed is None or parsed.tzinfo is None:
+                        self.pending.pop("requested_at", None)
         self._saved = saved
 
     async def async_cancel(self):
         self.pending = None
         self.error = None
+        self.last_request = None
         await self.async_save()
 
     def snapshot(self):
@@ -70,6 +87,7 @@ class SystemControl:
         modes = climate.attributes.get("hvac_modes", []) if available else []
         aux_ready = aux is not None and aux.state in ("on", "off")
         current = climate.state if available else None
+        local = c.feedback.local()
         reason = None
         if c.windows.busy:
             reason = "Windows open pause or restoration is active"
@@ -79,6 +97,8 @@ class SystemControl:
             reason = "Thermostat unavailable"
         elif current != "off":
             reason = "Mode and source changes locked while system is active"
+        elif local and (local.state != "off" or local.attributes.get("hvac_action") not in ("idle", "off", "fan")):
+            reason = "Waiting for local equipment to stop or report its state"
         elif not timedelta(0) <= dt_util.utcnow() - climate.last_reported < timedelta(minutes=10):
             reason = "Thermostat reading is stale"
         elif climate.attributes.get("hvac_action") not in ("idle", "off", "fan") or running_source(
@@ -87,7 +107,8 @@ class SystemControl:
             reason = "Waiting for equipment to stop or report its state"
         return {
             "entry_id": c.entry.entry_id,
-            "hvac_mode": current,
+            "hvac_mode": local.state if local else current,
+            "cloud_hvac_mode": current,
             "modes": [mode for mode in ("off", "cool", "heat") if mode in modes],
             "can_stop": available and "off" in modes and not c.windows.busy,
             "can_start": reason is None,
@@ -96,6 +117,30 @@ class SystemControl:
             "blocked_reason": reason,
             "pending": {key: value for key, value in self.pending.items() if key != "until"} if self.pending else None,
             "error": self.error,
+            "request": self._request_status(),
+        }
+
+    def _request_status(self):
+        request = self.pending or self.last_request
+        if not request:
+            return None
+        started = request.get("requested_at")
+        at = dt_util.parse_datetime(started) if isinstance(started, str) else None
+        if not self.pending and at and dt_util.utcnow() - at > timedelta(minutes=5):
+            return None
+        observed = self.coordinator.feedback.local() or self.coordinator.feedback.cloud()
+        if not self.pending and not self.error and (
+            not observed or observed.state != request["mode"]
+            or request["mode"] == "heat" and self.coordinator._aux_selection() is not (request["source"] == "gas")
+        ):
+            return None
+        return {
+            "mode": request["mode"], "source": request["source"],
+            "requested_at": started,
+            "elapsed_seconds": max(0, int((dt_util.utcnow() - at).total_seconds())) if at else None,
+            "status": "failed" if self.error else "pending" if self.pending else "confirmed",
+            "mode_confirmed_locally": self.coordinator.feedback.local_mode_after(request["mode"], at),
+            "confirmation_source": request.get("confirmation_source"),
         }
 
     def confirm(self):
@@ -105,10 +150,23 @@ class SystemControl:
         mode, source = self.pending["mode"], self.pending["source"]
         climate = c.hass.states.get(c.windows.climate_entity)
         fresh_report = climate is not None and climate.last_reported > self._reported_at
-        if fresh_report and c._hvac_mode() == mode and (mode != "heat" or c._aux_selection() is (source == "gas")):
+        requested = self.pending.get("requested_at")
+        requested_at = dt_util.parse_datetime(requested) if isinstance(requested, str) else None
+        local_match = c.feedback.local_mode_after(mode, requested_at)
+        aux = c.hass.states.get(c._aux_entity) if c._aux_entity else None
+        fresh_aux = bool(aux and requested_at and aux.last_reported > requested_at
+                         and (self._aux_reported_at is None or aux.last_reported > self._aux_reported_at))
+        cloud_match = fresh_report and c._hvac_mode() == mode
+        # A generic local "heating" report can never prove gas/heat-pump selection.
+        fuel_match = mode != "heat" or (c._aux_selection() is (source == "gas") and (not c.feedback.local() or not requested_at or fresh_aux))
+        if (cloud_match or local_match) and fuel_match and not (
+            c.feedback.local() and c.feedback.local().state != mode
+        ):
+            self.last_request = {**self.pending, "confirmation_source": "local + Ecobee fuel" if local_match and mode == "heat" else "local" if local_match else "Ecobee"}
             self.pending = None
             self.error = None
         elif dt_util.utcnow() >= self.pending["until"]:
+            self.last_request = dict(self.pending)
             self.pending = None
             self.error = "Thermostat did not confirm the requested mode; no automatic retry"
 
@@ -124,7 +182,7 @@ class SystemControl:
             raise ServiceValidationError("Choose Heat pump or Gas furnace; automatic selection is unavailable")
         if c.windows.busy:
             raise ServiceValidationError(state["blocked_reason"])
-        if not self.pending and mode == state["hvac_mode"] and (mode != "heat" or source == state["heat_source"]):
+        if not self.pending and mode == state["hvac_mode"] == state["cloud_hvac_mode"] and (mode != "heat" or source == state["heat_source"]):
             return
         if mode != "off" and not state["can_start"]:
             raise ServiceValidationError(state["blocked_reason"])
@@ -138,14 +196,17 @@ class SystemControl:
             domain, service, data = "climate", "set_hvac_mode", {"entity_id": c.windows.climate_entity, "hvac_mode": mode}
         if not c.hass.services.has_service(domain, service):
             raise ServiceValidationError("Thermostat service is unavailable")
-        previous_pending, previous_reported = self.pending, self._reported_at
+        previous_pending, previous_reported, previous_aux = self.pending, self._reported_at, self._aux_reported_at
         self.error = None
         self._reported_at = c.hass.states.get(c.windows.climate_entity).last_reported
-        self.pending = {"mode": mode, "source": source, "until": dt_util.utcnow() + timedelta(minutes=5)}
+        aux = c.hass.states.get(c._aux_entity) if c._aux_entity else None
+        self._aux_reported_at = aux.last_reported if aux else None
+        now = dt_util.utcnow()
+        self.pending = {"mode": mode, "source": source, "until": now + timedelta(minutes=5), "requested_at": now.isoformat()}
         try:
             await self.async_save()
         except Exception:
-            self.pending, self._reported_at = previous_pending, previous_reported
+            self.pending, self._reported_at, self._aux_reported_at = previous_pending, previous_reported, previous_aux
             self.error = "Could not save system request; no command sent"
             raise
         c.clear_prearrival()
@@ -156,5 +217,7 @@ class SystemControl:
             # Delivery can be uncertain on timeout. Keep the confirmation guard
             # but never retry automatically or claim that the mode was applied.
             self.error = str(err) or type(err).__name__
+            c.feedback.request_refresh()
             raise
+        c.feedback.request_refresh()
         self.confirm()

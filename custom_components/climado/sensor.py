@@ -128,6 +128,7 @@ class ClimadoSensor(CoordinatorEntity, SensorEntity):
         if self.entity_description.key == "effective_mode":
             return {
                 "system_control": data.get("system_control"),
+                "thermostat_feedback": data.get("thermostat_feedback"),
                 "heating_alerts": data.get("heating_alerts"),
                 "hvac_mode": data.get("hvac_mode"),
                 "windows_open": data.get("windows_open"),

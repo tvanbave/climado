@@ -78,6 +78,43 @@ const assert = require('node:assert/strict');
     await page.evaluate(()=>{window.calls=[];});
     await page.locator('ha-switch[aria-label="Windows open"] input').click();
     assert.deepEqual(await page.evaluate(()=>window.calls),[['switch','toggle',{entity_id:'switch.climado_windows_open'}]]);
+    await page.evaluate(()=>{
+      const c=window.card;
+      c.hass={...c.hass,states:{...c.hass.states,
+        'sensor.climado_control_reason':{state:'system_mode_pending',attributes:{}},
+        'switch.climado_windows_open':{state:'off',attributes:{}},
+        'sensor.climado_effective_mode':{...c.hass.states['sensor.climado_effective_mode'],state:'inactive'}}};
+    });
+    await page.evaluate(()=>window.report({
+      main_temp:20,bedroom_temp:20.5,windows_open:false,heating_alerts:{issues:[]},
+      thermostat_feedback:{source:'local',fresh:true,local_status:'ready',hvac_mode:'heat',hvac_action:'heating',
+        mode_disagreement:true,reported_at:new Date().toISOString()},
+      system_control:{entry_id:'test',hvac_mode:'heat',cloud_hvac_mode:'off',modes:['off','cool','heat'],
+        can_start:false,can_stop:true,source_available:true,pending:{mode:'heat',source:'gas'},
+        request:{mode:'heat',source:'gas',status:'pending',mode_confirmed_locally:true,
+          requested_at:new Date(Date.now()-65000).toISOString()}}
+    }));
+    await page.getByText(/Heat mode confirmed locally; waiting for fuel confirmation/).waitFor();
+    assert.equal(await page.getByRole('button',{name:'System Off',exact:true}).isDisabled(),false);
+    assert.equal(await page.getByRole('button',{name:'System Heat',exact:true}).isDisabled(),true);
+    const before=await page.locator('.feedback-note').textContent();
+    await page.waitForFunction(previous=>window.card.shadowRoot.querySelector('.feedback-note').textContent!==previous,
+      before,{timeout:4000});
+    assert.notEqual(await page.locator('.feedback-note').textContent(),before,'Feedback age should tick without a HA update');
+    for(const width of [320,390,1100]) {
+      await page.setViewportSize({width,height:1100});
+      const boxes=await page.locator('.system-controls,.control-note,.feedback-note,.segment').evaluateAll(nodes=>nodes.map(node=>{
+        const r=node.getBoundingClientRect();return {left:r.left,right:r.right,overflow:node.scrollWidth>node.clientWidth+1};
+      }));
+      assert(boxes.every(b=>b.left>=0 && b.right<=width && !b.overflow),JSON.stringify(boxes));
+      const screenshot=path.join(os.tmpdir(),'climado-local-feedback-'+width+'.png');
+      await page.screenshot({path:screenshot,fullPage:true});
+      console.log('Local feedback layout passed: '+width+'px; '+screenshot);
+    }
+    await page.evaluate(()=>window.report({thermostat_feedback:{source:'cloud',fresh:true,
+      local_status:'unavailable_or_stale',reported_at:new Date().toISOString(),refresh_error:'offline'}}));
+    await page.getByText(/Local feedback unavailable or stale/).waitFor();
+    await page.getByText('Status refresh delayed; no equipment command repeated',{exact:true}).waitFor();
     assert.deepEqual(errors,[]);
     console.log('Targets, source draft, explicit Heat request, observed state and Windows guards passed; no page errors.');
   } finally { await browser.close(); }

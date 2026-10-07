@@ -8,6 +8,7 @@
         "data": {
           "name": "Zone name",
           "climate_entity": "Thermostat (climate entity)",
+          "local_feedback_entity": "Local feedback thermostat (optional, same physical thermostat; read-only)",
           "main_temp_sensor": "Regulating temperature sensor",
           "bedroom_temp_sensor": "Bedroom / second sensor",
           "presence_entities": "Presence (phones / persons)",
@@ -33,6 +34,9 @@
         }
       }
     },
+    "error": {
+      "same_feedback_entity": "Select a separate local entity for the same physical thermostat, or leave this blank."
+    },
     "abort": {
       "already_configured": "This thermostat already has a Climado zone."
     }
@@ -45,6 +49,7 @@
         "data": {
           "name": "Zone name",
           "climate_entity": "Thermostat (climate entity)",
+          "local_feedback_entity": "Local feedback thermostat (optional, same physical thermostat; read-only)",
           "main_temp_sensor": "Regulating temperature sensor",
           "bedroom_temp_sensor": "Bedroom / second sensor",
           "presence_entities": "Presence (phones / persons)",
@@ -84,6 +89,7 @@
       }
     },
     "error": {
+      "same_feedback_entity": "Select a separate local entity for the same physical thermostat, or leave this blank.",
       "invalid_heat_cost": "Invalid heat-cost inputs. Check the details above."
     }
   }
