@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.0b3 - Source Selection While Paused
+
+- Allow choosing the next heating source while the system is Off, including
+  during a Windows open pause. This changes only the card's draft selection;
+  starting Heat still requires an explicit action and all existing safety guards.
+
 ## 0.4.0b2 - Local Thermostat Feedback
 
 - Add an optional read-only HomeKit feedback thermostat. Fresh local reports

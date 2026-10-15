@@ -76,6 +76,12 @@ const assert = require('node:assert/strict');
     await page.evaluate(()=>window.report({system_control:{entry_id:'test',hvac_mode:'off',modes:['off','cool','heat'],can_start:false,can_stop:false,source_available:true,blocked_reason:'Windows open pause or restoration is active'}}));
     assert.equal(await page.getByRole('button',{name:'System Heat',exact:true}).isDisabled(),true);
     await page.evaluate(()=>{window.calls=[];});
+    await page.getByRole('button',{name:'Heating source Heat pump',exact:true}).click();
+    await page.getByRole('button',{name:'Heating source Gas furnace',exact:true}).click();
+    assert.equal(await page.getByRole('button',{name:'Heating source Gas furnace',exact:true}).getAttribute('aria-pressed'),'true');
+    assert.equal(await page.getByRole('button',{name:'System Heat',exact:true}).isDisabled(),true);
+    assert.equal(await page.getByRole('button',{name:'Heating source Automatic',exact:true}).isDisabled(),true);
+    assert.deepEqual(await page.evaluate(()=>window.calls),[],'Draft selection during Windows pause must not send commands');
     await page.locator('ha-switch[aria-label="Windows open"] input').click();
     assert.deepEqual(await page.evaluate(()=>window.calls),[['switch','toggle',{entity_id:'switch.climado_windows_open'}]]);
     await page.evaluate(()=>{

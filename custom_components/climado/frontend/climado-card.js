@@ -249,9 +249,17 @@ class ClimadoCard extends LitElement {
     return system.can_start && (mode !== "heat" || system.source_available);
   }
 
+  _canChooseHeatSource(system) {
+    // Choosing a draft never commands equipment; starting Heat has separate guards.
+    return !!(system?.entry_id && system.hvac_mode === "off"
+      && (system.cloud_hvac_mode === undefined || system.cloud_hvac_mode === "off")
+      && system.source_available && system.modes?.includes("heat")
+      && !system.pending && !this._systemBusy);
+  }
+
   _chooseHeatSource(e, source) {
     const system = this._systemState(e);
-    if (!system?.can_start || !system.source_available || this._systemBusy || !["heat_pump", "gas"].includes(source)) return;
+    if (!this._canChooseHeatSource(system) || !["heat_pump", "gas"].includes(source)) return;
     this._heatSource = source;
     this._systemError = null;
   }
@@ -626,7 +634,7 @@ class ClimadoCard extends LitElement {
     if (!system?.entry_id || !this.hass.services?.climado?.set_system_mode) return html``;
     const heating = system.hvac_mode === "heat";
     const source = heating ? system.heat_source : this._heatSource;
-    const sourceReady = system.can_start && system.source_available && system.modes?.includes("heat") && !this._systemBusy;
+    const sourceReady = this._canChooseHeatSource(system);
     const error = this._systemError || system.error;
     const status = this._systemStatus(system);
     const feedback = this._attr(e.effective_mode, "thermostat_feedback");
@@ -1188,4 +1196,4 @@ window.customCards.push({
   documentation: "https://github.com/tvanbave/climado",
 });
 
-console.info("%c CLIMADO-CARD %c 0.4.0b2 ", "background:#1565c0;color:#fff", "");
+console.info("%c CLIMADO-CARD %c 0.4.0b3 ", "background:#1565c0;color:#fff", "");

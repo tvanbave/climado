@@ -206,7 +206,10 @@ Active systems must be switched Off before changing system mode or source.
 Starts require supported modes, an available Aux switch for heating, and fresh
 thermostat feedback (under 10 minutes) showing no active heating or cooling;
 fan-only operation is allowed and fan settings are untouched. Controls are
-blocked throughout a Windows open pause/restoration. Off remains available
+blocked throughout a Windows open pause/restoration, except that the card can
+prepare the next heating-source choice while both reported modes are Off and
+no system request is pending. That choice sends no equipment command and does
+not alter the mode/source saved for Windows restoration. Off remains available
 to cancel a pending start, except during that Windows-owned pause.
 
 Manual requests use `climado.set_system_mode` with `entry_id`, `hvac_mode`, and

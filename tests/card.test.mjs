@@ -173,6 +173,43 @@ test("pending confirmation blocks new starts but allows an explicit Off", async 
   assert.equal(item.calls.length, 1);
 });
 
+test("Windows pause permits a source draft but never starts heating", async () => {
+  const item = systemCard({ cloud_hvac_mode: "off", can_start: false, can_stop: false,
+    blocked_reason: "Windows open pause or restoration is active" });
+  const e = item._entities();
+  assert.equal(item._canChooseHeatSource(item._systemState(e)), true);
+  item._chooseHeatSource(e, "gas");
+  assert.equal(item._heatSource, "gas");
+  assert.match(item.render(), /Heating source Gas furnace aria-pressed=true/);
+  await item._setSystemMode(e, "heat");
+  assert.equal(item.calls.length, 0);
+  // Once the backend permits a start, Heat still needs an explicit click.
+  item._systemState(e).can_start = true;
+  assert.equal(item.calls.length, 0);
+  await item._setSystemMode(e, "heat");
+  assert.equal(item.calls.length, 1);
+  assert.equal(item.calls[0][2].heat_source, "gas");
+});
+
+test("source drafting stays locked for active, conflicting, pending or unavailable systems", () => {
+  for (const overrides of [
+    { hvac_mode: "heat" }, { hvac_mode: "cool" }, { hvac_mode: null },
+    { cloud_hvac_mode: "heat" }, { cloud_hvac_mode: null },
+    { pending: { mode: "heat", source: "heat_pump" } },
+    { source_available: false }, { modes: ["off", "cool"] },
+  ]) {
+    const item = systemCard(overrides);
+    assert.equal(item._canChooseHeatSource(item._systemState(item._entities())), false);
+    item._chooseHeatSource(item._entities(), "gas");
+    assert.equal(item._heatSource, "heat_pump");
+    assert.equal(item.calls.length, 0);
+  }
+  const item = systemCard();
+  item._systemBusy = true;
+  item._chooseHeatSource(item._entities(), "gas");
+  assert.equal(item._heatSource, "heat_pump");
+});
+
 test("failed mode requests show the error and release the local busy guard", async () => {
   const item = systemCard();
   item.hass.callService = async () => { throw new Error("Thermostat offline"); };
