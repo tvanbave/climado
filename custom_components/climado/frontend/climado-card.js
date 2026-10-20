@@ -417,9 +417,17 @@ class ClimadoCard extends LitElement {
     const off = eff === "disabled" || (enableReady && !enableOn);
     const dirty = this._dirty();
     const canResume = !!(holdUntil || preUntil);
-    const bigTemp = holdTemp != null ? holdTemp : target;
+    const restoring = a("windows_restoring") === true;
+    const restoration = a("windows_restoration");
+    const localRestoreTarget = restoring && restoration?.phase === "paused"
+      && localFeedback && ["heat", "cool"].includes(restoration.mode)
+      && feedback.hvac_mode === restoration.mode ? numericValue(feedback.target) : null;
+    const showLocalTarget = !unavailable && holdTemp == null && target == null && localRestoreTarget != null;
+    const bigTemp = holdTemp != null ? holdTemp : target ?? (showLocalTarget ? localRestoreTarget : null);
     const bigLabel = holdTemp != null ? "Hold" : regulating === "bedroom" ? "Bedroom target" : "Target";
-    const title = unavailable ? "Unavailable" : reason === "thermostat_off" ? "System off" : reason === "system_mode_pending" ? "Waiting" : this._humanMode(eff);
+    const restoreTitle = restoration?.phase === "pausing" ? "Finishing pause"
+      : ({heat: "Restoring heating", cool: "Restoring cooling", off: "Restoring Off"})[restoration?.mode] || "Restoring thermostat";
+    const title = unavailable ? "Unavailable" : restoring ? restoreTitle : reason === "thermostat_off" ? "System off" : reason === "system_mode_pending" ? "Waiting" : this._humanMode(eff);
     const subtitle = unavailable
       ? "Waiting for Climado to report its state"
       : this._humanReason(reason, heating);
@@ -457,6 +465,8 @@ class ClimadoCard extends LitElement {
           </div>
         </div>
 
+        ${showLocalTarget ? html`<div class="control-note">Target reported locally; Ecobee confirmation pending</div>` : ""}
+
         ${(a("heating_alerts")?.issues || []).map(issue => html`<div class="heating-alert" role="alert"><ha-icon icon="mdi:alert-outline"></ha-icon><span>${issue.message}</span></div>`)}
         ${a("heating_alerts")?.monitoring === "unavailable" ? html`<div class="control-note">Heating monitoring unavailable: indoor readings are missing or stale</div>` : ""}
 
@@ -479,7 +489,9 @@ class ClimadoCard extends LitElement {
           </div>
         </div>
 
-        ${heating && feedback?.mode_disagreement
+        ${restoring && restoration?.mode === "heat" && ["gas", "heat_pump"].includes(restoration.heat_source)
+          ? html`<div class="control-note">${restoration.phase === "pausing" ? "Will restore" : "Restoring"} ${this._fuelLabel(restoration.heat_source)} · awaiting Ecobee confirmation</div>`
+          : heating && feedback?.mode_disagreement
           ? html`<div class="control-note">Heating source: waiting for Ecobee confirmation</div>`
           : heating && selected
           ? html`<div class="control-note">Selected: ${this._fuelLabel(selected)} · Manual fuel selection</div>`
@@ -644,7 +656,8 @@ class ClimadoCard extends LitElement {
     const system = this._systemState(e);
     if (!system?.entry_id || !this.hass.services?.climado?.set_system_mode) return html``;
     const heating = system.hvac_mode === "heat";
-    const source = heating ? system.heat_source : this._heatSource;
+    const source = this._attr(e.effective_mode, "windows_restoring") === true
+      ? null : heating ? system.heat_source : this._heatSource;
     const sourceReady = this._canChooseHeatSource(system);
     const error = this._systemError || system.error;
     const status = this._systemStatus(system);
@@ -1248,4 +1261,4 @@ window.customCards.push({
   documentation: "https://github.com/tvanbave/climado",
 });
 
-console.info("%c CLIMADO-CARD %c 0.4.0b4 ", "background:#1565c0;color:#fff", "");
+console.info("%c CLIMADO-CARD %c 0.4.0b5 ", "background:#1565c0;color:#fff", "");

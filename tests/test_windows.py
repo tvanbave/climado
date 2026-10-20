@@ -121,6 +121,9 @@ async def test_unconfirmed_restore_blocks_all_target_writes(window_engine):
     await e.c.async_set_windows_open(False)
     assert e.c.data["windows_restoring"]
     assert e.c.data["target"] is None
+    assert e.c.data["windows_restoration"] == {
+        "mode": "cool", "heat_source": None, "phase": "paused",
+    }
     await e.c._async_update_data()
     assert e.service.call_count == 1
     assert e.service.call_args.args[1] == "set_hvac_mode"
@@ -542,3 +545,19 @@ async def test_window_delays_are_tunable(auto_windows):
     assert e.c.windows.automatic
     await contact(e, CONTACTS[0], "off")
     assert e.c.window_contacts.deadline == e.clock.utcnow() + timedelta(minutes=1)
+
+
+@pytest.mark.parametrize("mode,aux,source", [
+    ("heat", True, "gas"), ("heat", False, "heat_pump"),
+    ("cool", False, None), ("off", False, None),
+])
+async def test_restore_intent_is_exposed_without_claiming_confirmation(window_engine, mode, aux, source):
+    e = window_engine
+    e.c.windows.restore = {"mode": mode, "aux": aux, "phase": "paused",
+                           "aux_entity": "switch.test_aux" if mode == "heat" else None}
+    assert e.c.windows.restoration == {"mode": mode, "heat_source": source, "phase": "paused"}
+    # Changing reported source cannot rewrite the saved restoration intent.
+    e.hass.states.async_set("switch.test_aux", "off" if aux else "on")
+    assert e.c.windows.restoration["heat_source"] == source
+    e.c.windows.restore = None
+    assert e.c.windows.restoration is None

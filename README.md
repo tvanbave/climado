@@ -188,6 +188,13 @@ not the front, side or garage doors. Monitoring is off by default.
 See [automatic Windows validation](docs/releases/auto-windows-2026-10-20.md)
 for the identified alarm-panel contacts and deployment checks.
 
+During restoration, v0.4.0b5 labels the state **Restoring heating**
+or **Restoring cooling**. A fresh local target matching the saved mode is shown
+as **reported locally**, while the saved heating source is labeled **Restoring**
+and awaiting Ecobee confirmation. These are display-only hints: the resolved
+target stays unknown until confirmed, and HomeKit never identifies the fuel.
+Stale, missing, wrong-mode or Off feedback does not supply a display target.
+
 ### Existing controls
 With the integration loaded:
 - Toggle a presence/occupancy sensor and watch `sensor.*_effective_mode` /

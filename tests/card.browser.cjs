@@ -174,6 +174,47 @@ const assert = require('node:assert/strict');
       await page.screenshot({path:screenshot,fullPage:true});
       console.log('Auto windows layout passed: '+width+'px; '+screenshot);
     }
+    await page.evaluate(async()=>{
+      const c=window.card;
+      c.hass={...c.hass,states:{...c.hass.states,
+        'sensor.climado_control_reason':{state:'windows_restoring',attributes:{}},
+        'sensor.climado_effective_mode':{...c.hass.states['sensor.climado_effective_mode'],state:'windows_open'}
+      }};
+      await window.report({
+        windows_open:false,windows_manual:false,windows_automatic:false,windows_restoring:true,windows_pending:true,
+        windows_restoration:{mode:'heat',heat_source:'gas',phase:'paused'},
+        auto_windows:{enabled:true,status:'monitoring',open_names:[]},
+        thermostat_feedback:{source:'local',fresh:true,hvac_mode:'heat',hvac_action:'idle',target:21,
+          mode_disagreement:true,reported_at:new Date().toISOString()},
+        system_control:{entry_id:'test',hvac_mode:'heat',cloud_hvac_mode:'off',modes:['off','cool','heat'],
+          can_start:false,can_stop:false,source_available:true,heat_source:null,
+          blocked_reason:'Windows open pause or restoration is active'}
+      });
+      window.calls=[];
+    });
+    await page.getByText('Restoring heating',{exact:true}).waitFor();
+    assert.equal(await page.locator('.target').textContent(),'21°');
+    await page.getByText('Target reported locally; Ecobee confirmation pending',{exact:true}).waitFor();
+    await page.getByText('Restoring Gas furnace · awaiting Ecobee confirmation',{exact:true}).waitFor();
+    assert.equal(await page.getByRole('button',{name:'Heating source Gas furnace',exact:true}).getAttribute('aria-pressed'),'false');
+    assert.equal(await page.getByRole('button',{name:'System Heat',exact:true}).isDisabled(),true);
+    for(const width of [320,390,1100]) {
+      await page.setViewportSize({width,height:1100});
+      await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+      const boxes=await page.locator('.head,.mode,.temps,.control-note').evaluateAll(nodes=>nodes.map(node=>{
+        const r=node.getBoundingClientRect();return {left:r.left,right:r.right,overflow:node.scrollWidth>node.clientWidth+1};
+      }));
+      assert(boxes.every(b=>b.left>=0 && b.right<=width && !b.overflow),JSON.stringify(boxes));
+      const titleBox=await page.locator('.mode').boundingBox();
+      const targetBox=await page.locator('.temps').boundingBox();
+      assert(titleBox.x+titleBox.width<=targetBox.x,'Title must not overlap target');
+      const screenshot=path.join(os.tmpdir(),'climado-window-restoration-'+width+'.png');
+      await page.screenshot({path:screenshot,fullPage:true});
+      console.log('Window restoration layout passed: '+width+'px; '+screenshot);
+    }
+    assert.deepEqual(await page.evaluate(()=>window.calls),[],'Restoration display must not issue controls');
+    await page.evaluate(()=>window.report({thermostat_feedback:{source:'local',fresh:false,hvac_mode:'heat',target:21}}));
+    assert.equal(await page.locator('.target').textContent(),'—');
     assert.deepEqual(errors,[]);
     console.log('Targets, source draft, explicit Heat request, observed state and Windows guards passed; no page errors.');
   } finally { await browser.close(); }

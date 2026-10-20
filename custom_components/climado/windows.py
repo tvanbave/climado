@@ -31,6 +31,16 @@ class WindowsPause:
     def busy(self):
         return self.active or self.restore is not None
 
+    @property
+    def restoration(self):
+        """Expose saved intent, never an observation of running equipment."""
+        if self.restore is None:
+            return None
+        mode = self.restore.get("mode")
+        aux = self.restore.get("aux")
+        source = ("gas" if aux else "heat_pump") if mode == "heat" and isinstance(aux, bool) else None
+        return {"mode": mode, "heat_source": source, "phase": self.restore.get("phase")}
+
     async def async_load(self):
         saved = await self._store.async_load()
         if saved and saved.get("climate_entity") == self.climate_entity:

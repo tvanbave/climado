@@ -179,6 +179,79 @@ function systemCard(overrides = {}) {
   return item;
 }
 
+function restoringCard(overrides = {}) {
+  const item = systemCard({hvac_mode:"heat",cloud_hvac_mode:"off",can_start:false,can_stop:false,heat_source:null});
+  Object.assign(item.hass.states["sensor.climado_effective_mode"].attributes, {
+    windows_restoring:true, windows_pending:true,
+    windows_restoration:{mode:"heat",heat_source:"gas",phase:"paused"},
+    thermostat_feedback:{source:"local",fresh:true,hvac_mode:"heat",hvac_action:"idle",target:21,mode_disagreement:true},
+    ...overrides,
+  });
+  item.hass.states["sensor.climado_effective_mode"].state = "windows_open";
+  item.hass.states["sensor.climado_control_reason"].state = "windows_restoring";
+  return item;
+}
+
+test("restoration shows locally reported target and saved fuel intent without confirming fuel", async () => {
+  const item = restoringCard();
+  const view = item.render();
+  assert.match(view, /class="mode">Restoring heating/);
+  assert.match(view, /class="target">21°/);
+  assert.match(view, /Target reported locally; Ecobee confirmation pending/);
+  assert.match(view, /Restoring Gas furnace · awaiting Ecobee confirmation/);
+  assert.doesNotMatch(view, /Selected: Gas furnace/);
+  assert.doesNotMatch(view, /class="mode">Windows open/);
+  for (const source of ["Heat pump","Gas furnace","Automatic"]) {
+    assert.match(view, new RegExp(`aria-label=Heating source ${source}\\s+aria-pressed=false`));
+  }
+  await item._setSystemMode(item._entities(), "heat");
+  assert.equal(item.calls.length, 0);
+});
+
+test("local restoration target is hidden for stale, cloud, wrong-mode and invalid observations", () => {
+  for (const feedback of [
+    {source:"local",fresh:false,hvac_mode:"heat",target:21},
+    {source:"cloud",fresh:true,hvac_mode:"heat",target:21},
+    {source:"local",fresh:true,hvac_mode:"off",target:21},
+    {source:"local",fresh:true,hvac_mode:"cool",target:21},
+    {source:"local",fresh:true,hvac_mode:"heat",target:null},
+    {source:"local",fresh:true,hvac_mode:"heat",target:Infinity},
+  ]) {
+    const view = restoringCard({thermostat_feedback:feedback}).render();
+    assert.match(view, /class="target">—</);
+    assert.doesNotMatch(view, /Target reported locally/);
+  }
+});
+
+test("restoration never presents local target as a resolved Climado target", () => {
+  const item = restoringCard();
+  item.hass.states["sensor.climado_resolved_target"].state = "20";
+  assert.match(item.render(), /class="target">20°/);
+  assert.doesNotMatch(item.render(), /Target reported locally/);
+  item.hass.states["sensor.climado_resolved_target"].state = "unknown";
+  item.hass.states["sensor.climado_effective_mode"].attributes.windows_restoring = false;
+  assert.match(item.render(), /class="target">—</);
+});
+
+test("saved fuel is not inferred from HomeKit and pending Off does not display a heating target", () => {
+  const missing = restoringCard({windows_restoration:{mode:"heat",phase:"paused"}}).render();
+  assert.doesNotMatch(missing, /Restoring Gas furnace|Restoring Heat pump/);
+  const pausing = restoringCard({windows_restoration:{mode:"heat",heat_source:"gas",phase:"pausing"}}).render();
+  assert.match(pausing, /Finishing pause/);
+  assert.match(pausing, /Will restore Gas furnace/);
+  assert.match(pausing, /class="target">—</);
+});
+
+test("cooling restoration uses local cooling target and no heating-source intent", () => {
+  const view = restoringCard({
+    windows_restoration:{mode:"cool",heat_source:null,phase:"paused"},
+    thermostat_feedback:{source:"local",fresh:true,hvac_mode:"cool",target:23},
+  }).render();
+  assert.match(view, /Restoring cooling/);
+  assert.match(view, /class="target">23°/);
+  assert.doesNotMatch(view, /Restoring Gas furnace|Restoring Heat pump/);
+});
+
 test("source draft does not start equipment and Heat sends the explicit selected source", async () => {
   const item = systemCard();
   const e = item._entities();

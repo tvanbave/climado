@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.0b5 - Clearer Window Restoration Status
+
+- Show a fresh, matching HomeKit target as locally reported during Windows
+  restoration without publishing it as a resolved Climado target.
+- Show the saved heating source as restoration intent awaiting Ecobee
+  confirmation, never as confirmed fuel or running equipment.
+- Replace the Windows open heading with Restoring heating/cooling while
+  restoration is pending. Equipment commands and confirmation guards are unchanged.
+
 ## 0.4.0b4 - Automatic Windows, Sensor Reliability and Cost Setup
 
 - Add opt-in ventilation contact monitoring with adjustable continuous-open

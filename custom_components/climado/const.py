@@ -4,7 +4,7 @@ from __future__ import annotations
 from homeassistant.const import Platform
 
 DOMAIN = "climado"
-VERSION = "0.4.0b4"
+VERSION = "0.4.0b5"
 
 PLATFORMS = [
     Platform.SELECT,

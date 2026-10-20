@@ -136,6 +136,7 @@ class ClimadoSensor(CoordinatorEntity, SensorEntity):
                 "windows_automatic": data.get("windows_automatic"),
                 "auto_windows": data.get("auto_windows"),
                 "windows_restoring": data.get("windows_restoring"),
+                "windows_restoration": data.get("windows_restoration"),
                 "windows_pending": data.get("windows_pending"),
                 "windows_error": data.get("windows_error"),
                 "heating_enabled": data.get("heating_enabled"),

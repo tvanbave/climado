@@ -1094,6 +1094,7 @@ class ClimadoCoordinator(DataUpdateCoordinator):
             "windows_automatic": self.windows.automatic,
             "auto_windows": self._auto_windows_state,
             "windows_restoring": not self.windows.active and self.windows.restore is not None,
+            "windows_restoration": self.windows.restoration,
             "windows_error": self.windows.error,
             "windows_pending": self.windows.retry_at is not None,
             "reason": reason,
