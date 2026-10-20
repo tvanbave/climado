@@ -14,7 +14,8 @@ class WindowsPause:
         self.hass = hass
         self.climate_entity = climate_entity
         self.aux_entity = aux_entity
-        self.active = False
+        self.manual = False
+        self.automatic = False
         self.restore = None
         self.error = None
         self.retry_at = None
@@ -23,33 +24,50 @@ class WindowsPause:
         self._store = Store(hass, 1, f"climado.{entry_id}.windows")
 
     @property
+    def active(self):
+        return self.manual or self.automatic
+
+    @property
     def busy(self):
         return self.active or self.restore is not None
 
     async def async_load(self):
         saved = await self._store.async_load()
         if saved and saved.get("climate_entity") == self.climate_entity:
-            self.active = saved.get("active") is True
+            self.manual = saved.get("manual", saved.get("active")) is True
+            self.automatic = saved.get("automatic") is True
             self.restore = saved.get("restore")
 
     async def _save(self):
         await self._store.async_save({
             "climate_entity": self.climate_entity,
             "active": self.active,
+            "manual": self.manual,
+            "automatic": self.automatic,
             "restore": self.restore,
         })
 
     async def async_set_active(self, active):
-        if active == self.active:
+        await self.async_set_owners(manual=active)
+
+    async def async_set_owners(self, *, manual=None, automatic=None):
+        owners = (
+            self.manual if manual is None else manual,
+            self.automatic if automatic is None else automatic,
+        )
+        previous = (self.manual, self.automatic)
+        if owners == previous:
             return
-        previous = self.active
-        self.active = active
+        was_active = self.active
+        self.manual, self.automatic = owners
         try:
             await self._save()
         except Exception:
-            self.active = previous
+            self.manual, self.automatic = previous
             raise
-        if not self.restore or self.restore.get("phase") != "pausing":
+        if was_active != self.active and (
+            not self.restore or self.restore.get("phase") != "pausing"
+        ):
             self._command = None
             self.retry_at = None
         self.error = None

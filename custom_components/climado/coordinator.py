@@ -28,6 +28,7 @@ from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers.event import (
     async_track_point_in_time,
     async_track_state_change_event,
+    async_track_state_report_event,
 )
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
@@ -67,6 +68,12 @@ from .const import (
     CONF_RATE_PLAN,
     CONF_VACATION_TEMP,
     CONF_WORKDAY_SENSOR,
+    CONF_AUTO_WINDOWS,
+    CONF_WINDOW_CONTACTS,
+    CONF_WINDOW_OPEN_DELAY,
+    CONF_WINDOW_CLOSE_DELAY,
+    DEFAULT_WINDOW_OPEN_DELAY,
+    DEFAULT_WINDOW_CLOSE_DELAY,
     STRUCTURAL_KEYS,
     DEFAULT_AWAY_DELAY,
     DEFAULT_AWAY_TEMP,
@@ -94,11 +101,13 @@ from .const import (
 )
 from .rate import default_ulo_plan, plan_from_schedule, plan_to_dict, rate_offset
 from .windows import WindowsPause
+from .window_contacts import WindowContacts
 from .fuel import aux_selection, find_aux_entity, running_source, selected_source
 from .advisory import heat_advisory
 from .system import SystemControl
 from .feedback import ThermostatFeedback
 from .alerts import HeatingAlerts
+from .temperature import INDOOR_MAX_AGE, temperature_reading
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -166,6 +175,8 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         self._aux_entity = self.opt(CONF_AUX_HEAT_SWITCH)
         self._fuel_discovery_error = None
         self.windows = WindowsPause(hass, self.opt(CONF_CLIMATE_ENTITY), entry.entry_id, self._aux_entity)
+        self.window_contacts = WindowContacts()
+        self._auto_windows_state = {"enabled": False, "status": "disabled"}
         self.feedback = ThermostatFeedback(self)
         self.windows.request_refresh = self.feedback.request_refresh
         self.system = SystemControl(self)
@@ -307,10 +318,15 @@ class ClimadoCoordinator(DataUpdateCoordinator):
             self._store.async_delay_save(self._runtime_data, 1)
 
     async def async_setup_listeners(self) -> None:
+        contacts = self.opt(CONF_WINDOW_CONTACTS, [])
+        if contacts:
+            self._unsub.append(async_track_state_change_event(
+                self.hass, contacts, self._handle_window_event
+            ))
         watch = list(self.opt(CONF_PRESENCE_ENTITIES, [])) + list(
             self.opt(CONF_OCCUPANCY_ENTITIES, [])
         )
-        for key in (CONF_WORKDAY_SENSOR, CONF_CLIMATE_ENTITY, CONF_LOCAL_FEEDBACK_ENTITY, CONF_MAIN_TEMP_SENSOR, CONF_BEDROOM_TEMP_SENSOR, CONF_OUTDOOR_TEMP_SENSOR):
+        for key in (CONF_WORKDAY_SENSOR, CONF_CLIMATE_ENTITY, CONF_LOCAL_FEEDBACK_ENTITY, CONF_OUTDOOR_TEMP_SENSOR):
             if entity_id := self.opt(key):
                 watch.append(entity_id)
         if self._aux_entity:
@@ -324,6 +340,26 @@ class ClimadoCoordinator(DataUpdateCoordinator):
                     self.hass, watch, self._handle_sensor_event
                 )
             )
+        rooms = list(dict.fromkeys(
+            entity_id for key in (CONF_MAIN_TEMP_SENSOR, CONF_BEDROOM_TEMP_SENSOR)
+            if (entity_id := self.opt(key))
+        ))
+        if rooms:
+            # Identical reports renew freshness without a state_changed event.
+            for track in (async_track_state_change_event, async_track_state_report_event):
+                self._unsub.append(track(self.hass, rooms, self._handle_room_report))
+
+    @callback
+    def _handle_window_event(self, event: Event) -> None:
+        state = event.data.get("new_state")
+        self.window_contacts.observe(
+            event.data["entity_id"], state.state if state else None
+        )
+        self.hass.async_create_task(self.async_request_refresh())
+
+    @callback
+    def _handle_room_report(self, event: Event) -> None:
+        self.hass.async_create_task(self.async_request_refresh())
 
     async def async_unload(self) -> None:
         await self.feedback.async_close()
@@ -386,6 +422,11 @@ class ClimadoCoordinator(DataUpdateCoordinator):
             hour=0, minute=0, second=0, microsecond=0
         )
         candidates = [next_at(night_start), next_at(night_end), midnight]
+        for key in (CONF_MAIN_TEMP_SENSOR, CONF_BEDROOM_TEMP_SENSOR):
+            entity_id = self.opt(key)
+            if temperature_reading(self.hass, entity_id, now=now)["status"] == "ready":
+                expiry = self.hass.states.get(entity_id).last_reported + INDOOR_MAX_AGE
+                candidates.append(dt_util.as_local(expiry))
         if self.opt(CONF_LOCAL_FEEDBACK_ENTITY):
             candidates.append(now + timedelta(minutes=1))
         if self.opt(CONF_ALERTS_ENABLED, True) and (self.windows.busy or self._hvac_mode() == "heat" or self.system.error):
@@ -405,7 +446,7 @@ class ClimadoCoordinator(DataUpdateCoordinator):
                 expiry = outdoor.last_reported + timedelta(minutes=max_age)
                 if expiry > dt_util.as_utc(now):
                     candidates.append(dt_util.as_local(expiry))
-        deadlines = [self._prearrival_until, self._manual_hold_until, self._retry_at, self._release_retry_at, self.windows.retry_at]
+        deadlines = [self._prearrival_until, self._manual_hold_until, self._retry_at, self._release_retry_at, self.windows.retry_at, self.window_contacts.deadline]
         if self._absence_since is not None:
             deadlines.append(self._absence_since + timedelta(minutes=int(self.tune(CONF_AWAY_DELAY, DEFAULT_AWAY_DELAY))))
         for deadline in deadlines:
@@ -449,7 +490,7 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         # `force` = explicit user intent (the physical button): never skip on the
         # only-if-above guard. The guard is for conditional/service callers.
         if not force and threshold is not None:
-            current = self._get_float(self.opt(CONF_MAIN_TEMP_SENSOR))
+            current = temperature_reading(self.hass, self.opt(CONF_MAIN_TEMP_SENSOR))["value"]
             if not math.isfinite(float(threshold)):
                 raise ValueError("Pre-arrival threshold must be finite")
             if current is None or not math.isfinite(current) or (current >= float(threshold) if heating else current <= float(threshold)):
@@ -466,17 +507,6 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         return self._prearrival_until is not None and dt_util.utcnow() < self._prearrival_until
 
     # ---- helpers ----
-    def _get_float(self, entity_id):
-        if not entity_id:
-            return None
-        state = self.hass.states.get(entity_id)
-        if state is None or state.state in _UNAVAILABLE:
-            return None
-        try:
-            return float(state.state)
-        except (ValueError, TypeError):
-            return None
-
     def _is_occupied(self) -> bool | None:
         unknown = False
         for ent in self.opt(CONF_PRESENCE_ENTITIES, []):
@@ -706,6 +736,37 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         return default_ulo_plan(coast, lead, depth)
 
     # ---- core evaluation ----
+    async def _evaluate_auto_windows(self):
+        enabled = self.opt(CONF_AUTO_WINDOWS, False)
+        contacts = self.opt(CONF_WINDOW_CONTACTS, [])
+        was_active = self.windows.active
+        if not enabled or not contacts:
+            self.window_contacts = WindowContacts()
+            self._auto_windows_state = {
+                "enabled": enabled,
+                "status": "disabled" if not enabled else "not_configured",
+            }
+            if self.windows.automatic:
+                # Removing monitoring must not unexpectedly restart equipment.
+                await self.windows.async_set_owners(manual=True, automatic=False)
+        else:
+            active, state = self.window_contacts.evaluate(
+                self.hass, contacts, self.windows.automatic,
+                self.tune(CONF_WINDOW_OPEN_DELAY, DEFAULT_WINDOW_OPEN_DELAY),
+                self.tune(CONF_WINDOW_CLOSE_DELAY, DEFAULT_WINDOW_CLOSE_DELAY),
+            )
+            self._auto_windows_state = {
+                **state, "enabled": True,
+                "open_names": [
+                    self.hass.states.get(entity_id).name for entity_id in state["open_entities"]
+                ],
+            }
+            await self.windows.async_set_owners(automatic=active)
+        if self.windows.active and not was_active:
+            await self.system.async_cancel()
+            self.clear_prearrival()
+            self.clear_manual_hold()
+
     async def async_set_system_mode(self, mode, source=None, context=None):
         try:
             async with self._evaluation_lock:
@@ -751,6 +812,7 @@ class ClimadoCoordinator(DataUpdateCoordinator):
 
     async def _evaluate(self) -> dict:
         self.system.confirm()
+        await self._evaluate_auto_windows()
         released_before_pause = self._released
         self._sync_hvac_context()
         control_context = self._hvac_context
@@ -914,8 +976,6 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         )
         state["is_workday"] = is_workday
         state["rate_profile"] = "weekday" if is_workday else "weekend"
-        state["main_temp"] = self._get_float(self.opt(CONF_MAIN_TEMP_SENSOR))
-        state["bedroom_temp"] = self._get_float(self.opt(CONF_BEDROOM_TEMP_SENSOR))
         state["hvac_action"] = self._climate_attr("hvac_action")
         state["thermostat_target"] = self._climate_attr("temperature")
         state["control_temperature"] = self._climate_attr("current_temperature")
@@ -1003,6 +1063,10 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         return self._climate_attr("temperature") if await self._send_command(command) else None
 
     def _state(self, mode, reason, target, tier, occupied, is_night, applied=None, rate_plan=None) -> dict:
+        rooms = {
+            "main": temperature_reading(self.hass, self.opt(CONF_MAIN_TEMP_SENSOR)),
+            "bedroom": temperature_reading(self.hass, self.opt(CONF_BEDROOM_TEMP_SENSOR)),
+        }
         return {
             "system_control": self.system.snapshot(),
             "thermostat_feedback": self.feedback.snapshot(),
@@ -1019,12 +1083,16 @@ class ClimadoCoordinator(DataUpdateCoordinator):
             "hvac_action": self._climate_attr("hvac_action"),
             "thermostat_target": self._climate_attr("temperature"),
             "control_temperature": self._climate_attr("current_temperature"),
-            "main_temp": self._get_float(self.opt(CONF_MAIN_TEMP_SENSOR)),
-            "bedroom_temp": self._get_float(self.opt(CONF_BEDROOM_TEMP_SENSOR)),
+            "main_temp": rooms["main"]["value"],
+            "bedroom_temp": rooms["bedroom"]["value"],
+            "room_readings": rooms,
             "is_workday": self._is_workday(),
             "rate_profile": "weekday" if self._is_workday() else "weekend",
             "mode": mode,
             "windows_open": self.windows.active,
+            "windows_manual": self.windows.manual,
+            "windows_automatic": self.windows.automatic,
+            "auto_windows": self._auto_windows_state,
             "windows_restoring": not self.windows.active and self.windows.restore is not None,
             "windows_error": self.windows.error,
             "windows_pending": self.windows.retry_at is not None,

@@ -105,7 +105,14 @@ class ClimadoWindowsSwitch(_BaseSwitch):
 
     @property
     def is_on(self):
-        return self.coordinator.windows.active
+        return self.coordinator.windows.manual
+
+    @property
+    def extra_state_attributes(self):
+        return {
+            "automatic_pause": self.coordinator.windows.automatic,
+            "effective_pause": self.coordinator.windows.active,
+        }
 
     async def async_turn_on(self, **kwargs):
         await self.coordinator.async_set_windows_open(True)

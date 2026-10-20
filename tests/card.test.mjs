@@ -88,6 +88,28 @@ test("older installs do not show a nonfunctional window toggle", () => {
   assert.doesNotMatch(card({}).render(), /aria-label="Windows open"/);
 });
 
+test("automatic windows status is distinct from the manual pause switch", () => {
+  const item = card({windows_automatic:true, windows_manual:false, auto_windows:{
+    enabled:true, status:"paused", open_names:["Patio Door", "Dining Room Window"],
+  }});
+  item.hass.states["switch.climado_windows_open"] = {state:"off", attributes:{}};
+  item.hass.entities["switch.climado_windows_open"] = {device_id:"test"};
+  const view = item.render();
+  assert.match(view, /aria-label="Manual windows pause"/);
+  assert.match(view, /Auto windows: heating and cooling paused/);
+  assert.match(view, /Patio Door, Dining Room Window/);
+});
+
+test("auto closure does not promise to clear a manual pause", () => {
+  const item = card({});
+  const state = {status:"waiting_to_resume",deadline:"2026-10-20T12:02:00-04:00"};
+  assert.match(item._windowStatus(state,true,true), /manual pause remains/);
+  assert.match(item._windowStatus(state,false,true), /resume at/);
+  assert.match(item._windowStatus({status:"sensor_unavailable"},false,true), /pause retained/);
+  assert.doesNotMatch(item._windowStatus({status:"sensor_unavailable"},false,false), /pause retained/);
+  assert.match(item._windowStatus({status:"not_configured"},false,false), /no contacts selected/);
+});
+
 test("selected gas does not imply the furnace is running", () => {
   const item = card({ hvac_mode: "heat", hvac_action: "idle", selected_source: "gas", running_source: "idle" });
   const view = item.render();
@@ -118,6 +140,32 @@ test("missing advisory inputs are named without showing cached costs", () => {
   assert.match(view, /heat-pump performance table, electricity prices/);
   assert.doesNotMatch(view, /estimated cheaper|CAD cents/);
   assert.match(item._renderFuelAdvisory({ status: "unavailable", reason: "outdoor_stale" }), /Outdoor reading is stale/);
+});
+
+test("disabled cost advice exposes a collapsed setup checklist without estimates", () => {
+  const item = card({});
+  const view = item._renderFuelAdvisory({status: "disabled", setup: {
+    status: "unavailable", reason: "missing_inputs", missing_inputs: ["cop_points", "electricity_prices"],
+  }});
+  assert.match(view, /<details class="fuel-advisory fuel-setup">/);
+  assert.match(view, /Heating cost setup/);
+  assert.match(view, /<li>heat-pump performance table<\/li>/);
+  assert.doesNotMatch(view, /estimated cheaper|CAD cents|<details[^>]+open/);
+  assert.match(item._renderFuelAdvisory({status: "disabled", setup: {status: "ready"}}), /Inputs valid; cost advice disabled/);
+  assert.match(item._renderFuelAdvisory({status: "disabled", setup: {reason: "gas_tariff_expired"}}), /Gas prices outside their valid dates/);
+  assert.equal(item._renderFuelAdvisory({status: "disabled"}), "");
+});
+
+test("stale rooms keep their labels and replace the old temperature with a status", () => {
+  const view = card({main_temp: null, bedroom_temp: 21, room_readings: {
+    main: {entity_id: "sensor.main", status: "stale"},
+    bedroom: {entity_id: "sensor.bedroom", status: "ready"},
+  }}).render();
+  assert.match(view, /Main floor/);
+  assert.match(view, /class="rval">—<\/span>/);
+  assert.match(view, /Stale reading/);
+  assert.match(view, /class="rval">21°<\/span>/);
+  assert.equal(card({})._roomStatus({status: "not_configured"}), "");
 });
 
 function systemCard(overrides = {}) {

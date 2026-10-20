@@ -84,7 +84,7 @@ async def test_heating_prearrival_threshold_and_expiry(engine):
     engine.hass.states.async_set("person.test", "not_home")
     await engine.c._async_update_data()
     assert not engine.c.start_prearrival()  # main room 23, target 20
-    engine.hass.states.async_set("sensor.main", "18")
+    engine.hass.states.async_set("sensor.main", "18", {"unit_of_measurement": "°C"}, timestamp=engine.clock.utcnow().timestamp())
     assert engine.c.start_prearrival(lead_minutes=10, only_if_below=19)
     data = await engine.c._async_update_data()
     assert data["reason"] == "pre_arrival_heat"

@@ -14,6 +14,23 @@ def test_schema_defaults_heating_off():
         "name": "Test", "climate_entity": "climate.test", "main_temp_sensor": "sensor.main",
     })
     assert data["heating_enabled"] is False
+    assert data["auto_windows_enabled"] is False
+    assert data["window_contact_entities"] == []
+
+
+@pytest.mark.asyncio
+async def test_windows_options_can_clear_initial_contacts_and_preserve_timing():
+    entry = SimpleNamespace(
+        data={"window_contact_entities": ["binary_sensor.patio"], "auto_windows_enabled": True},
+        options={"window_open_delay_minutes": 3, "window_close_delay_minutes": 2},
+    )
+    flow = ClimadoOptionsFlow(entry)
+    flow.async_create_entry = Mock(side_effect=lambda **kwargs: kwargs)
+    result = await flow.async_step_init({"climate_entity": "climate.test"})
+    assert result["data"]["window_contact_entities"] == []
+    assert result["data"]["auto_windows_enabled"] is False
+    assert result["data"]["window_open_delay_minutes"] == 3
+    assert result["data"]["window_close_delay_minutes"] == 2
 
 
 @pytest.mark.asyncio

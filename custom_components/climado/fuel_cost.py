@@ -85,6 +85,16 @@ UNION_SOUTH_M1_2026_Q3 = GasTariff(
     source="https://www.oeb.ca/sites/default/files/qram-union-20260701-en.pdf",
 )
 
+# Reference only, pre-tax system-gas marginal charges; never auto-applied.
+# The separate Q4 earnings/variance adjustment is billed in three equal
+# instalments, not added to the charge for an extra cubic metre consumed now.
+UNION_SOUTH_M1_2026_Q4 = GasTariff(
+    valid_from=date(2026, 10, 1),
+    valid_until=date(2027, 1, 1),
+    blocks=((100, 0.264176), (250, 0.260631), (None, 0.251479)),
+    source="https://www.oeb.ca/sites/default/files/qram-union-20261001-en.pdf",
+)
+
 
 def interpolate_cop(points: tuple[tuple[float, float], ...], outdoor_c: float) -> float:
     """Linear interpolation within supplied data only; no extrapolation."""

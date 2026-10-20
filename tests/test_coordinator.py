@@ -148,8 +148,12 @@ async def test_away_delay_starts_at_departure_event(engine, monkeypatch):
     await engine.hass.async_block_till_done()
     departure = engine.clock.utcnow()
     await engine.c._async_update_data()
+    # Room freshness expires first; the absence deadline must survive that tick.
+    assert engine.timer.call_args.args[2] == departure + timedelta(minutes=1)
+    engine.clock.value += timedelta(minutes=1)
+    await engine.c._async_update_data()
     assert engine.timer.call_args.args[2] == departure + timedelta(minutes=45)
-    engine.clock.value += timedelta(minutes=31)
+    engine.clock.value += timedelta(minutes=30)
     assert (await engine.c._async_update_data())["mode"] == "home"
     engine.clock.value += timedelta(minutes=14)
     assert (await engine.c._async_update_data())["mode"] == "away"
@@ -247,7 +251,7 @@ async def test_thermostat_attribute_and_temperature_events_refresh(engine, monke
     thermostat(engine, hvac_action="cooling")
     await engine.hass.async_block_till_done()
     assert refresh.call_count == 1
-    engine.hass.states.async_set("sensor.bedroom", "24.8")
+    engine.hass.states.async_set("sensor.bedroom", "24.8", {"unit_of_measurement": "°C"}, timestamp=engine.clock.utcnow().timestamp())
     await engine.hass.async_block_till_done()
     assert refresh.call_count == 2
     state = await engine.c._async_update_data()

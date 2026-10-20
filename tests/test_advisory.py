@@ -160,3 +160,34 @@ def test_invalid_advisory_clears_numeric_sensors():
     for desc in SENSORS:
         if desc.key in ("heat_pump_cost", "furnace_cost_min", "furnace_cost_max"):
             assert desc.value_fn({"heat_advisory": {"status": "unavailable"}}) is None
+
+
+async def test_disabled_advisory_reports_setup_without_costs(engine, cost_config):
+    e = engine
+    e.c.enabled = False
+    e.entry.options["heat_cost"] = {}
+    missing = (await e.c._async_update_data())["heat_advisory"]
+    assert missing["status"] == "disabled"
+    assert "cop_points" in missing["setup"]["missing_inputs"]
+    assert "outdoor_temp_sensor" in missing["setup"]["missing_inputs"]
+    e.entry.options.update(heat_cost={**cost_config, "enabled": False}, outdoor_temp_sensor="sensor.outdoor")
+    outdoor(e)
+    ready = (await e.c._async_update_data())["heat_advisory"]
+    assert ready["status"] == "disabled"
+    assert ready["setup"]["status"] == "ready"
+    assert ready["setup"]["reason"] == "inputs_valid"
+    assert ready["preferred_source"] is None
+    assert "heat_pump_per_kwh" not in ready
+    assert not ready["automatic_switching"]
+    e.service.assert_not_called()
+
+
+async def test_disabled_setup_exposes_invalid_or_expired_inputs(engine, cost_config):
+    outdoor(engine)
+    config = {**cost_config, "enabled": False, "gas_valid_until": "2026-09-07"}
+    result = estimate(engine, config)
+    assert result["setup"]["reason"] == "gas_tariff_expired"
+    assert result["preferred_source"] is None
+    result = estimate(engine, {**config, "furnace_efficiency": 95})
+    assert result["setup"]["reason"] == "invalid_inputs"
+    assert "furnace_per_kwh_min" not in result

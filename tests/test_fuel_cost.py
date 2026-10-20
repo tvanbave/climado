@@ -5,6 +5,7 @@ import pytest
 
 from custom_components.climado.fuel_cost import (
     UNION_SOUTH_M1_2026_Q3 as TARIFF,
+    UNION_SOUTH_M1_2026_Q4,
 )
 from custom_components.climado.fuel_cost import (
     GasTariff,
@@ -33,6 +34,21 @@ def test_gas_blocks_and_unknown_consumption():
     assert TARIFF.marginal_range(DAY, None) == (0.248480, 0.261177)
     assert TARIFF.incremental_cost(DAY, 90, 180) == pytest.approx(10 * .261177 + 150 * .257632 + 20 * .248480)
     assert TARIFF.incremental_cost(DAY, 0, 0) == 0  # no fixed monthly charges
+
+
+def test_q4_reference_is_dated_marginal_cost_not_total_bill():
+    tariff = UNION_SOUTH_M1_2026_Q4
+    day = date(2026, 10, 1)
+    # Commodity + quarterly adjustment + delivery + facility charge, cents -> dollars.
+    for used, delivery in ((0, 8.7022), (100, 8.3477), (250, 7.4325)):
+        price = (15.3548 + 2.3461 + delivery + .0145) / 100
+        assert tariff.marginal_range(day, used) == pytest.approx((price, price))
+    assert tariff.incremental_cost(day, 90, 180) == pytest.approx(
+        10 * .264176 + 150 * .260631 + 20 * .251479)
+    assert tariff.incremental_cost(day, 0, 0) == 0
+    for invalid in (date(2026, 9, 30), date(2027, 1, 1)):
+        with pytest.raises(ValueError):
+            tariff.check_date(invalid)
 
 
 def test_cop_interpolation():

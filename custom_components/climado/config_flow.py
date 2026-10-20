@@ -45,6 +45,8 @@ from .const import (
     CONF_PRESENCE_ENTITIES,
     CONF_VACATION_TEMP,
     CONF_WORKDAY_SENSOR,
+    CONF_AUTO_WINDOWS,
+    CONF_WINDOW_CONTACTS,
     DEFAULT_AWAY_DELAY,
     DEFAULT_AWAY_TEMP,
     DEFAULT_COMFORT_HOME,
@@ -63,7 +65,7 @@ from .const import (
 )
 
 
-def _entity(domain, multiple: bool = False, device_class: str | None = None):
+def _entity(domain, multiple: bool = False, device_class: str | list[str] | None = None):
     kwargs: dict[str, Any] = {"domain": domain, "multiple": multiple}
     if device_class:
         kwargs["device_class"] = device_class
@@ -97,6 +99,8 @@ def _build_schema(current: dict) -> vol.Schema:
             vol.Optional(CONF_PRESENCE_ENTITIES, default=current.get(CONF_PRESENCE_ENTITIES, [])): _entity(["device_tracker", "person"], multiple=True),
             vol.Optional(CONF_OCCUPANCY_ENTITIES, default=current.get(CONF_OCCUPANCY_ENTITIES, [])): _entity("binary_sensor", multiple=True),
             vol.Optional(CONF_WORKDAY_SENSOR, default=dft(CONF_WORKDAY_SENSOR, None)): _entity("binary_sensor"),
+            vol.Optional(CONF_AUTO_WINDOWS, default=current.get(CONF_AUTO_WINDOWS, False)): selector.BooleanSelector(),
+            vol.Optional(CONF_WINDOW_CONTACTS, default=current.get(CONF_WINDOW_CONTACTS, [])): _entity("binary_sensor", multiple=True, device_class=["door", "window", "opening"]),
             vol.Optional(CONF_HEATING_ENABLED, default=False): selector.BooleanSelector(),
             vol.Optional(CONF_ALERTS_ENABLED, default=True): selector.BooleanSelector(),
             vol.Optional(CONF_ALERT_NOTIFICATIONS, default=True): selector.BooleanSelector(),
@@ -140,6 +144,8 @@ def _structural_schema(current: dict) -> vol.Schema:
             vol.Optional(CONF_PRESENCE_ENTITIES, default=current.get(CONF_PRESENCE_ENTITIES, [])): _entity(["device_tracker", "person"], multiple=True),
             vol.Optional(CONF_OCCUPANCY_ENTITIES, default=current.get(CONF_OCCUPANCY_ENTITIES, [])): _entity("binary_sensor", multiple=True),
             vol.Optional(CONF_WORKDAY_SENSOR, default=dft(CONF_WORKDAY_SENSOR, None)): _entity("binary_sensor"),
+            vol.Optional(CONF_AUTO_WINDOWS, default=current.get(CONF_AUTO_WINDOWS, False)): selector.BooleanSelector(),
+            vol.Optional(CONF_WINDOW_CONTACTS, default=current.get(CONF_WINDOW_CONTACTS, [])): _entity("binary_sensor", multiple=True, device_class=["door", "window", "opening"]),
             vol.Optional(CONF_HEATING_ENABLED, default=current.get(CONF_HEATING_ENABLED, False)): selector.BooleanSelector(),
             vol.Optional(CONF_ALERTS_ENABLED, default=current.get(CONF_ALERTS_ENABLED, True)): selector.BooleanSelector(),
             vol.Optional(CONF_ALERT_NOTIFICATIONS, default=current.get(CONF_ALERT_NOTIFICATIONS, True)): selector.BooleanSelector(),
@@ -188,6 +194,8 @@ class ClimadoOptionsFlow(config_entries.OptionsFlow):
             user_input = dict(user_input)
             # Override an initial-setup value when the optional picker is cleared.
             user_input.setdefault(CONF_LOCAL_FEEDBACK_ENTITY, None)
+            user_input.setdefault(CONF_WINDOW_CONTACTS, [])
+            user_input.setdefault(CONF_AUTO_WINDOWS, False)
             configure_cost = user_input.pop("configure_heat_cost", False)
             # Preserve non-form option keys (e.g. the saved rate plan) — replacing
             # options wholesale with just the structural fields would silently

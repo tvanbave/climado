@@ -90,7 +90,7 @@ async def test_unsupported_requests_are_rejected(engine, mode, source):
 @pytest.mark.parametrize("active", [True, False])
 async def test_windows_pause_and_restoration_block_manual_modes(engine, active):
     setup_system(engine)
-    engine.c.windows.active = active
+    await engine.c.windows.async_set_active(active)
     engine.c.windows.restore = {"mode": "heat", "phase": "paused"}
     with pytest.raises(ServiceValidationError, match="Windows"):
         await engine.c.system.async_set("heat", "gas")

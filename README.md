@@ -150,12 +150,43 @@ restarts and scheduled mode changes. Turn it off to restore the previous HVAC
 mode and resume Climado's existing control behavior. A thermostat that was
 already off stays off; Ecobee furnace-only selection is also preserved.
 
-This is a manual pause, with no automatic timeout or temperature override.
+The toggle is a manual pause, with no automatic timeout or temperature override.
 Resume, Home and Sleep do not cancel it; close the Windows open toggle explicitly.
 Current temperatures and electricity rate remain visible, along with status
 for pending or failed thermostat commands. Update through HACS, restart Home
 Assistant and refresh the dashboard. No thermostat changes occur merely from
-installing the feature. Fall heating controls are not part of v0.3.16.
+installing the feature.
+
+#### Automatic ventilation pause (0.4.0b4)
+
+In Climado options, select **Ventilation contacts** and enable **Automatically
+pause for open windows / patio door**. Select only windows and the patio door,
+not the front, side or garage doors. Monitoring is off by default.
+
+- One selected contact must remain continuously open for five minutes before
+  heating/cooling pauses. Brief openings and separate openings do not accumulate.
+- All selected contacts must remain closed for two minutes before the automatic
+  pause clears. Reopening or an unavailable contact cancels that countdown.
+- **Windows open delay** (1-30 minutes) and **Windows closed delay** (1-15 minutes)
+  are Configuration number entities on the Climado device.
+- The card shows open-contact names and the pause/resume deadline. Its switch
+  becomes **Manual windows pause** when automatic monitoring is enabled.
+  That switch controls only the manual pause; the automatic pause remains until
+  the contacts qualify as closed. An automatic closure never clears a manual hold.
+- Monitoring, like the manual Windows pause, is independent of **Climado control**.
+  Fan settings are unchanged. Restoration preserves an originally Off system,
+  and restores the previous Heat/Cool mode and heating source otherwise.
+- Pauses and the original mode survive restart. Open/closed countdowns restart
+  from fresh observations, not from unobserved time while HA was down.
+- A missing/unavailable contact is never treated as closed. During a pause it
+  blocks automatic restoration; while unpaused it shows a warning without
+  stopping HVAC solely because telemetry is missing.
+- Disabling monitoring or clearing its contact list during an automatic pause
+  transfers it to the manual toggle. Clear that toggle explicitly to resume.
+  Cold-pause alerts remain in effect; they do not override an open-window pause.
+
+See [automatic Windows validation](docs/releases/auto-windows-2026-10-20.md)
+for the identified alarm-panel contacts and deployment checks.
 
 ### Existing controls
 With the integration loaded:

@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.4.0b4 - Automatic Windows, Sensor Reliability and Cost Setup
+
+- Add opt-in ventilation contact monitoring with adjustable continuous-open
+  and all-closed delays (five and two minutes by default), exact timer wakeups,
+  separate persisted manual/automatic pause ownership, and card status.
+- Preserve the existing HVAC mode, heating source and fan settings. Unknown
+  contacts prevent automatic restoration; disabling monitoring during a pause
+  leaves a manual pause rather than unexpectedly starting equipment.
+- Reject stale, future-dated, non-finite and non-Celsius room observations in
+  card status, conditional prearrival and heating alerts. Refresh at the
+  15-minute expiry and recover on identical fresh reports.
+- Keep room labels visible with a stale/unavailable status instead of displaying
+  old temperatures. Native thermostat regulation and manual fuel choice remain
+  unchanged.
+- Add a collapsed heating-cost setup checklist while advice is disabled, without
+  publishing estimates or a preferred source.
+- Record the dated October-December 2026 Union South M1 marginal gas reference
+  and update the completion plan. No new cost inputs are automatically installed.
+
 ## 0.4.0b3 - Source Selection While Paused
 
 - Allow choosing the next heating source while the system is Off, including

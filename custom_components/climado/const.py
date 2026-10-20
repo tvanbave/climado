@@ -4,7 +4,7 @@ from __future__ import annotations
 from homeassistant.const import Platform
 
 DOMAIN = "climado"
-VERSION = "0.4.0b3"
+VERSION = "0.4.0b4"
 
 PLATFORMS = [
     Platform.SELECT,
@@ -24,6 +24,12 @@ CONF_BEDROOM_TEMP_SENSOR = "bedroom_temp_sensor"
 CONF_PRESENCE_ENTITIES = "presence_entities"
 CONF_OCCUPANCY_ENTITIES = "occupancy_entities"
 CONF_WORKDAY_SENSOR = "workday_sensor"
+CONF_AUTO_WINDOWS = "auto_windows_enabled"
+CONF_WINDOW_CONTACTS = "window_contact_entities"
+CONF_WINDOW_OPEN_DELAY = "window_open_delay_minutes"
+CONF_WINDOW_CLOSE_DELAY = "window_close_delay_minutes"
+DEFAULT_WINDOW_OPEN_DELAY = 5
+DEFAULT_WINDOW_CLOSE_DELAY = 2
 CONF_RATE_PLAN = "rate_plan"  # custom schedule {weekday:[[s,e,tier]...], weekend:[...]}
 CONF_HEATING_ENABLED = "heating_enabled"
 CONF_AUX_HEAT_SWITCH = "aux_heat_switch"
@@ -111,6 +117,8 @@ ATTR_FORCE = "force"
 # ---- Tunable config exposed as device entities (entity_category=config) ----
 # (key, name, min, max, step, unit, icon, default)
 NUMBER_TUNABLES = [
+    (CONF_WINDOW_OPEN_DELAY, "Windows open delay", 1, 30, 1, "min", "mdi:timer-outline", DEFAULT_WINDOW_OPEN_DELAY),
+    (CONF_WINDOW_CLOSE_DELAY, "Windows closed delay", 1, 15, 1, "min", "mdi:timer-outline", DEFAULT_WINDOW_CLOSE_DELAY),
     (CONF_ALERT_LOW_TEMP, "Window pause low temperature", 5, 22, 0.5, "°C", "mdi:thermometer-alert", 16),
     (CONF_ALERT_DELAY, "Window pause cold alert delay", 1, 120, 1, "min", "mdi:timer-alert-outline", 10),
     (CONF_ALERT_HEAT_MINUTES, "Heating progress check interval", 15, 180, 5, "min", "mdi:timer-alert-outline", 60),
@@ -139,6 +147,8 @@ TIME_TUNABLES = [
 
 # Structural keys edited via the options flow (everything else is a device entity)
 STRUCTURAL_KEYS = [
+    CONF_AUTO_WINDOWS,
+    CONF_WINDOW_CONTACTS,
     CONF_LOCAL_FEEDBACK_ENTITY,
     CONF_AUX_HEAT_SWITCH,
     CONF_OUTDOOR_TEMP_SENSOR,

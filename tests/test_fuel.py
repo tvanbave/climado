@@ -50,7 +50,8 @@ async def test_aux_and_outdoor_are_watched(engine, monkeypatch):
     watcher = Mock(return_value=Mock())
     monkeypatch.setattr("custom_components.climado.coordinator.async_track_state_change_event", watcher)
     await e.c.async_setup_listeners()
-    assert {"switch.aux", "sensor.outdoor", "sensor.gas_bill"} <= set(watcher.call_args.args[1])
+    watched = {entity_id for call in watcher.call_args_list for entity_id in call.args[1]}
+    assert {"switch.aux", "sensor.outdoor", "sensor.gas_bill"} <= watched
 
 
 async def test_discovery_filters_switch_platform_and_disabled_entries(engine, monkeypatch):

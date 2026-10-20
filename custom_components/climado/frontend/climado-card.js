@@ -389,6 +389,7 @@ class ClimadoCard extends LitElement {
     const presence = cleanValue(this._state(e.presence)?.state);
     const mainT = numericValue(a("main_temp"));
     const bedT = numericValue(a("bedroom_temp"));
+    const roomReadings = a("room_readings");
     const feedback = a("thermostat_feedback");
     const localFeedback = feedback?.source === "local" && feedback.fresh;
     const hvac = cleanValue(localFeedback ? feedback.hvac_action : a("hvac_action"));
@@ -400,6 +401,8 @@ class ClimadoCard extends LitElement {
     const prearrivalReady = this._callable(e.prearrival) && !["inactive", "disabled", "windows_open"].includes(eff);
     const windowsReady = this._available(e.windows);
     const windowsOn = windowsReady && this._state(e.windows)?.state === "on";
+    const autoWindows = a("auto_windows");
+    const windowsLabel = autoWindows?.enabled ? "Manual windows pause" : "Windows open";
     const resumeReady = this._callable(e.resume);
     const enableOn = enableReady && this._state(e.enable)?.state === "on";
     const vacOn = vacationReady && this._state(e.vacation)?.state === "on";
@@ -458,14 +461,16 @@ class ClimadoCard extends LitElement {
         ${a("heating_alerts")?.monitoring === "unavailable" ? html`<div class="control-note">Heating monitoring unavailable: indoor readings are missing or stale</div>` : ""}
 
         <div class="rooms">
-          ${mainT != null
+          ${mainT != null || roomReadings?.main?.entity_id
             ? html`<div class="room ${regulating === "main" ? "reg" : ""}">
                 <span class="rval">${this._temp(mainT)}</span><span class="rlbl">Main floor</span>
+                ${this._roomStatus(roomReadings?.main)}
               </div>`
             : ""}
-          ${bedT != null
+          ${bedT != null || roomReadings?.bedroom?.entity_id
             ? html`<div class="room ${regulating === "bedroom" ? "reg" : ""}">
                 <span class="rval">${this._temp(bedT)}</span><span class="rlbl">Bedroom</span>
+                ${this._roomStatus(roomReadings?.bedroom)}
               </div>`
             : ""}
           <div class="room">
@@ -520,12 +525,12 @@ class ClimadoCard extends LitElement {
         <div class="row">
           ${e.windows ? html`<label class="tgl">
             <ha-switch
-              aria-label="Windows open"
+              aria-label="${windowsLabel}"
               .checked=${windowsOn}
               .disabled=${!windowsReady}
               @change=${() => this._toggle(e.windows)}
             ></ha-switch>
-            Windows open
+            ${windowsLabel}
           </label>` : ""}
           <label class="tgl">
             <ha-switch
@@ -544,6 +549,12 @@ class ClimadoCard extends LitElement {
             Vacation
           </label>
         </div>
+
+        ${autoWindows?.enabled ? html`
+          <div class="control-note" role="status">
+            ${this._windowStatus(autoWindows, a("windows_manual"), a("windows_automatic"))}
+          </div>
+        ` : ""}
 
         <div class="row">
           <button class="action" ?disabled=${!prearrivalReady} @click=${() => this._press(e.prearrival)}>
@@ -688,8 +699,19 @@ class ClimadoCard extends LitElement {
       cooling: "Cooling", fan: "Fan only", idle: "Idle", off: "Off", unknown: "Unknown" })[source] || "Unknown";
   }
 
+  _roomStatus(reading) {
+    if (!reading || reading.status === "ready" || reading.status === "not_configured") return "";
+    const label = ({
+      stale: "Stale reading", future_report: "Check sensor clock",
+      unsupported_unit: "Celsius required", invalid: "Invalid reading",
+    })[reading.status] || "Unavailable";
+    return html`<span class="room-status">${label}</span>`;
+  }
+
   _renderFuelAdvisory(data) {
-    if (!data || data.status === "disabled") return "";
+    if (!data || (data.status === "disabled" && !data.setup)) return "";
+    const disabled = data.status === "disabled";
+    const assessment = disabled ? data.setup : data;
     const labels = {
       outdoor_temp_sensor: "outdoor sensor", prices_consistent: "matching price basis",
       electricity_prices: "electricity prices", electricity_valid_from: "electricity start date",
@@ -705,11 +727,20 @@ class ClimadoCard extends LitElement {
       gas_tariff_expired: "Gas prices outside their valid dates", outside_cop_range: "Outside the performance table temperature range",
       invalid_inputs: "Cost inputs need attention",
     };
-    if (data.status !== "ready") {
-      const message = data.reason === "missing_inputs"
-        ? `Needed: ${(data.missing_inputs || []).map(key => labels[key] || key).join(", ")}`
-        : reasons[data.reason] || "Cost estimate unavailable";
-      return html`<section class="fuel-advisory"><div class="fuel-heading">Heating cost estimate</div><div class="control-note">${message}</div></section>`;
+    if (disabled || data.status !== "ready") {
+      const missing = assessment.reason === "missing_inputs" ? assessment.missing_inputs || [] : [];
+      const message = assessment.status === "ready" ? "Inputs valid; cost advice disabled"
+        : missing.length ? "Missing inputs"
+        : reasons[assessment.reason] || "Cost estimate unavailable";
+      if (disabled) {
+        return html`<details class="fuel-advisory fuel-setup">
+          <summary>Heating cost setup</summary>
+          <div class="control-note">${message}</div>
+          ${missing.length ? html`<ul>${missing.map(key => html`<li>${labels[key] || key}</li>`)}</ul>` : ""}
+        </details>`;
+      }
+      const needed = missing.length ? `Needed: ${missing.map(key => labels[key] || key).join(", ")}` : message;
+      return html`<section class="fuel-advisory"><div class="fuel-heading">Heating cost estimate</div><div class="control-note">${needed}</div></section>`;
     }
     const cost = value => numericValue(value) == null ? "—" : (Number(value) * 100).toFixed(2);
     const gas = data.furnace_per_kwh_min === data.furnace_per_kwh_max
@@ -722,6 +753,24 @@ class ClimadoCard extends LitElement {
       <div class="fuel-result">${data.preferred_source ? `${this._fuelLabel(data.preferred_source)} estimated cheaper` : "Costs too close to favour a source"}</div>
       ${data.gas_usage_known === false ? html`<div class="control-note">Gas price range: billing-period usage unavailable</div>` : ""}
     </section>`;
+  }
+
+  _windowStatus(state, manual, automatic) {
+    const names = state.open_names?.join(", ");
+    const until = state.deadline ? this._fmt(state.deadline) : "";
+    const labels = {
+      monitoring: "Auto windows: all closed",
+      not_configured: "Auto windows: no contacts selected",
+      waiting_to_pause: `Auto windows: pause at ${until}`,
+      paused: "Auto windows: heating and cooling paused",
+      waiting_to_resume: manual
+        ? `Auto windows: clears at ${until}; manual pause remains`
+        : `Auto windows: resume at ${until}`,
+      sensor_unavailable: automatic
+        ? "Auto windows: contact unavailable; pause retained"
+        : "Auto windows: contact unavailable",
+    };
+    return `${labels[state.status] || "Auto windows"}${names ? ` (${names})` : ""}`;
   }
 
   _humanReason(reason, heating = false) {
@@ -831,6 +880,9 @@ class ClimadoCard extends LitElement {
       .system-error { font-size: 13px; color: var(--error-color, #b71c1c); overflow-wrap: anywhere; margin-top: 6px; }
       .feedback-note { font-size: 12px; color: var(--secondary-text-color); overflow-wrap: anywhere; margin-top: 6px; }
       .fuel-advisory { border-top: 1px solid var(--divider-color); border-bottom: 1px solid var(--divider-color); padding: 12px 0; margin: 12px 0; overflow-wrap: anywhere; }
+      .room-status { font-size: 12px; color: var(--secondary-text-color); overflow-wrap: anywhere; }
+      .fuel-setup summary { cursor: pointer; font-weight: 600; }
+      .fuel-setup ul { margin: 8px 0 0; padding-left: 20px; font-size: 13px; color: var(--secondary-text-color); }
       .fuel-heading { font-size: 14px; font-weight: 600; display: flex; flex-wrap: wrap; gap: 8px; justify-content: space-between; }
       .fuel-heading span { font-weight: 400; color: var(--secondary-text-color); }
       .fuel-costs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 10px 0; }
@@ -1196,4 +1248,4 @@ window.customCards.push({
   documentation: "https://github.com/tvanbave/climado",
 });
 
-console.info("%c CLIMADO-CARD %c 0.4.0b3 ", "background:#1565c0;color:#fff", "");
+console.info("%c CLIMADO-CARD %c 0.4.0b4 ", "background:#1565c0;color:#fff", "");

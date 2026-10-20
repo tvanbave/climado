@@ -31,6 +31,7 @@ const assert = require('node:assert/strict');
           'sensor.climado_control_reason':{state:'thermostat_off',attributes:{}},
           'sensor.climado_rate_tier':{state:'Mid-peak',attributes:{tier_id:'mid_peak',profile:'weekday'}},
           'sensor.climado_presence':{state:'occupied',attributes:{}},
+          'sensor.climado_fuel_cost_recommendation':{state:'unknown',attributes:{status:'disabled'}},
           'switch.climado_climado_control':{state:'on',attributes:{}},
           'switch.climado_windows_open':{state:'off',attributes:{}},
           'switch.climado_vacation':{state:'off',attributes:{}}
@@ -121,6 +122,58 @@ const assert = require('node:assert/strict');
       local_status:'unavailable_or_stale',reported_at:new Date().toISOString(),refresh_error:'offline'}}));
     await page.getByText(/Local feedback unavailable or stale/).waitFor();
     await page.getByText('Status refresh delayed; no equipment command repeated',{exact:true}).waitFor();
+    await page.evaluate(async()=>{
+      const c=window.card;
+      c.hass={...c.hass,states:{...c.hass.states,
+        'sensor.climado_fuel_cost_recommendation':{state:'unknown',attributes:{status:'disabled',setup:{
+          status:'unavailable',reason:'missing_inputs',
+          missing_inputs:['outdoor_temp_sensor','electricity_prices','gas_blocks','cop_points','furnace_efficiency','furnace_aux_kwh_per_heat_kwh','prices_consistent']
+        }}}}};
+      await window.report({main_temp:null,bedroom_temp:21.3,room_readings:{
+        main:{entity_id:'sensor.main',status:'stale'},bedroom:{entity_id:'sensor.bedroom',status:'ready'}
+      }});
+      window.calls=[];
+    });
+    await page.getByText('Stale reading',{exact:true}).waitFor();
+    assert.equal(await page.locator('.fuel-setup').getAttribute('open'),null);
+    await page.getByText('Heating cost setup',{exact:true}).click();
+    await page.getByText('heat-pump performance table',{exact:true}).waitFor();
+    assert.deepEqual(await page.evaluate(()=>window.calls),[],'Setup checklist must be read-only');
+    // The ticking-age behavior was checked above; freeze it for stitched images.
+    await page.evaluate(async()=>{clearInterval(window.card._statusTimer);await window.card.updateComplete;});
+    assert.equal(await page.locator('ha-card').count(),1);
+    for(const width of [320,390,1100]) {
+      await page.setViewportSize({width,height:1100});
+      await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+      const boxes=await page.locator('.room,.room-status,.fuel-setup,.fuel-setup li').evaluateAll(nodes=>nodes.map(node=>{
+        const r=node.getBoundingClientRect();return {left:r.left,right:r.right,overflow:node.scrollWidth>node.clientWidth+1};
+      }));
+      assert(boxes.every(b=>b.left>=0 && b.right<=width && !b.overflow),JSON.stringify(boxes));
+      const screenshot=path.join(os.tmpdir(),'climado-cost-setup-'+width+'.png');
+      await page.screenshot({path:screenshot,fullPage:true});
+      console.log('Cost setup and stale-room layout passed: '+width+'px; '+screenshot);
+    }
+    await page.evaluate(async()=>{
+      await window.report({windows_manual:false,windows_automatic:true,auto_windows:{
+        enabled:true,status:'paused',
+        open_names:['Alarm Panel Pro 97b758 Patio Door','Alarm Panel Pro 97b758 Dining Room Window','Alarm Panel Pro 97b758 Basement Windows 2']
+      }});
+      window.calls=[];
+    });
+    await page.getByText(/Auto windows: heating and cooling paused/).waitFor();
+    await page.locator('ha-switch[aria-label="Manual windows pause"] input').click();
+    assert.deepEqual(await page.evaluate(()=>window.calls),[['switch','toggle',{entity_id:'switch.climado_windows_open'}]]);
+    for(const width of [320,390,1100]) {
+      await page.setViewportSize({width,height:1100});
+      await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+      const boxes=await page.locator('.row,.tgl,.control-note').evaluateAll(nodes=>nodes.map(node=>{
+        const r=node.getBoundingClientRect();return {left:r.left,right:r.right,overflow:node.scrollWidth>node.clientWidth+1};
+      }));
+      assert(boxes.every(b=>b.left>=0 && b.right<=width && !b.overflow),JSON.stringify(boxes));
+      const screenshot=path.join(os.tmpdir(),'climado-auto-windows-'+width+'.png');
+      await page.screenshot({path:screenshot,fullPage:true});
+      console.log('Auto windows layout passed: '+width+'px; '+screenshot);
+    }
     assert.deepEqual(errors,[]);
     console.log('Targets, source draft, explicit Heat request, observed state and Windows guards passed; no page errors.');
   } finally { await browser.close(); }

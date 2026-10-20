@@ -46,8 +46,8 @@ async def engine(tmp_path, monkeypatch, clock):
     await dr.async_load(hass)
     await er.async_load(hass)
     hass.states.async_set("person.test", "home")
-    hass.states.async_set("sensor.main", "23")
-    hass.states.async_set("sensor.bedroom", "25")
+    hass.states.async_set("sensor.main", "23", {"unit_of_measurement": "°C"}, timestamp=clock.utcnow().timestamp())
+    hass.states.async_set("sensor.bedroom", "25", {"unit_of_measurement": "°C"}, timestamp=clock.utcnow().timestamp())
     hass.states.async_set("climate.test", "cool", {
         "temperature": 23.5, "preset_mode": "temp", "hvac_action": "idle",
         "current_temperature": 23.0, "min_temp": 7, "max_temp": 35,

@@ -15,6 +15,7 @@ from .const import (
     CONF_BEDROOM_TEMP_SENSOR,
     CONF_MAIN_TEMP_SENSOR,
 )
+from .temperature import temperature_reading
 
 ISSUES = ("windows_cold", "command_failed", "heat_not_improving")
 
@@ -36,17 +37,7 @@ class HeatingAlerts:
             return default
 
     def _temperature(self, entity_id, attribute=None):
-        state = self.c.hass.states.get(entity_id) if entity_id else None
-        if not state or state.state in ("unknown", "unavailable"):
-            return None
-        unit = state.attributes.get("temperature_unit", self.c.hass.config.units.temperature_unit) if attribute else state.attributes.get("unit_of_measurement")
-        if unit != "°C" or not timedelta(0) <= dt_util.utcnow() - state.last_reported < timedelta(minutes=15):
-            return None
-        try:
-            value = float(state.attributes.get(attribute) if attribute else state.state)
-            return value if isfinite(value) else None
-        except (TypeError, ValueError):
-            return None
+        return temperature_reading(self.c.hass, entity_id, attribute=attribute)["value"]
 
     def _notify(self, issues):
         active = {item["code"] for item in issues} if self.c.opt(CONF_ALERT_NOTIFICATIONS, True) else set()

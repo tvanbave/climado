@@ -81,6 +81,22 @@ def validate_cost_config(config):
 
 
 def heat_advisory(hass, config, outdoor_entity, tier_id, now):
+    """Expose setup blockers even while estimates are disabled; never command."""
+    if isinstance(config, dict) and not config.get("enabled", False):
+        assessment = _heat_advisory(hass, {**config, "enabled": True}, outdoor_entity, tier_id, now)
+        setup = {key: assessment[key] for key in
+                 ("status", "reason", "missing_inputs", "detail") if key in assessment}
+        if setup["status"] == "ready":
+            setup["reason"] = "inputs_valid"
+        return {
+            "status": "disabled", "reason": "disabled", "preferred_source": None,
+            "tier_id": tier_id, "automatic_switching": False,
+            "setup": setup,
+        }
+    return _heat_advisory(hass, config, outdoor_entity, tier_id, now)
+
+
+def _heat_advisory(hass, config, outdoor_entity, tier_id, now):
     """Return fresh advisory data, or an explicit reason with no cached costs."""
     base = {"status": "disabled", "reason": "disabled", "preferred_source": None, "tier_id": tier_id}
     if not isinstance(config, dict):
