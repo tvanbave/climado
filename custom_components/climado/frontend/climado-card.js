@@ -264,6 +264,24 @@ class ClimadoCard extends LitElement {
     this._systemError = null;
   }
 
+  async _toggleFuelAutomation(e) {
+    const system = this._systemState(e);
+    if (!system?.entry_id || this._systemBusy || !this.hass.services?.climado?.set_fuel_automation) return;
+    const automatic = this._attr(e.effective_mode, "auto_fuel");
+    if (!automatic?.enabled && (system.hvac_mode !== "heat" || system.pending)) return;
+    this._systemBusy = true;
+    this._systemError = null;
+    try {
+      await this.hass.callService("climado", "set_fuel_automation", {
+        entry_id: system.entry_id, enabled: !automatic?.enabled,
+      });
+    } catch (err) {
+      this._systemError = err?.message || "Automatic fuel selection could not be changed";
+    } finally {
+      this._systemBusy = false;
+    }
+  }
+
   async _setSystemMode(e, mode) {
     const system = this._systemState(e);
     if (!this._canSetSystem(system, mode)) return;
@@ -427,7 +445,7 @@ class ClimadoCard extends LitElement {
     const bigLabel = holdTemp != null ? "Hold" : regulating === "bedroom" ? "Bedroom target" : "Target";
     const restoreTitle = restoration?.phase === "pausing" ? "Finishing pause"
       : ({heat: "Restoring heating", cool: "Restoring cooling", off: "Restoring Off"})[restoration?.mode] || "Restoring thermostat";
-    const title = unavailable ? "Unavailable" : restoring ? restoreTitle : reason === "thermostat_off" ? "System off" : reason === "system_mode_pending" ? "Waiting" : this._humanMode(eff);
+    const title = unavailable ? "Unavailable" : restoring ? restoreTitle : reason === "fuel_transition" ? "Changing source" : reason === "thermostat_off" ? "System off" : reason === "system_mode_pending" ? "Waiting" : this._humanMode(eff);
     const subtitle = unavailable
       ? "Waiting for Climado to report its state"
       : this._humanReason(reason, heating);
@@ -485,7 +503,7 @@ class ClimadoCard extends LitElement {
             : ""}
           <div class="room">
             <span class="rval ${hvacInfo.active ? "cooling" : ""}">${equipmentLabel}</span>
-            <span class="rlbl">${heating ? "Manual fuel" : a("hvac_mode") && a("hvac_mode") !== "cool" ? "HVAC" : "AC"}</span>
+            <span class="rlbl">${heating ? a("fuel_control") === "ulo" ? "ULO fuel control" : "Manual fuel" : a("hvac_mode") && a("hvac_mode") !== "cool" ? "HVAC" : "AC"}</span>
           </div>
         </div>
 
@@ -494,7 +512,7 @@ class ClimadoCard extends LitElement {
           : heating && feedback?.mode_disagreement
           ? html`<div class="control-note">Heating source: waiting for Ecobee confirmation</div>`
           : heating && selected
-          ? html`<div class="control-note">Selected: ${this._fuelLabel(selected)} · Manual fuel selection</div>`
+          ? html`<div class="control-note">Selected: ${this._fuelLabel(selected)} · ${a("fuel_control") === "ulo" ? "ULO fuel control" : "Manual fuel selection"}</div>`
           : ""}
         ${this._renderFuelAdvisory(advisory)}
 
@@ -656,8 +674,12 @@ class ClimadoCard extends LitElement {
     const system = this._systemState(e);
     if (!system?.entry_id || !this.hass.services?.climado?.set_system_mode) return html``;
     const heating = system.hvac_mode === "heat";
-    const source = this._attr(e.effective_mode, "windows_restoring") === true
+    const automatic = this._attr(e.effective_mode, "auto_fuel");
+    const source = automatic?.enabled ? "auto" : this._attr(e.effective_mode, "windows_restoring") === true
       ? null : heating ? system.heat_source : this._heatSource;
+    const autoReady = !!this.hass.services?.climado?.set_fuel_automation && !this._systemBusy
+      && (automatic?.enabled || (heating && !system.pending && system.source_available
+        && !this._attr(e.effective_mode, "windows_open") && !this._attr(e.effective_mode, "windows_restoring")));
     const sourceReady = this._canChooseHeatSource(system);
     const error = this._systemError || system.error;
     const status = this._systemStatus(system);
@@ -679,13 +701,14 @@ class ClimadoCard extends LitElement {
         ${[["heat_pump", "Heat pump", "mdi:heat-pump"], ["gas", "Gas furnace", "mdi:fire"], ["auto", "Automatic", "mdi:auto-mode"]].map(([value, label, icon]) => html`
           <button class="segment ${source === value ? "selected" : ""}"
             aria-label=${`Heating source ${label}`} aria-pressed=${source === value}
-            ?disabled=${!sourceReady || value === "auto"}
-            title=${value === "auto" ? "Automatic fuel selection is not available" : label}
-            @click=${() => this._chooseHeatSource(e, value)}>
+            ?disabled=${value === "auto" ? !autoReady : !sourceReady}
+            title=${value === "auto" ? !this.hass.services?.climado?.set_fuel_automation ? "Automatic fuel selection is not available" : automatic?.enabled ? "Disable automatic fuel selection" : "Enable ULO fuel control" : label}
+            @click=${() => value === "auto" ? this._toggleFuelAutomation(e) : this._chooseHeatSource(e, value)}>
             <ha-icon .icon=${icon}></ha-icon><span>${label}</span>
           </button>`)}
       </div>
       ${!system.source_available ? html`<div class="control-note">Heating source unavailable</div>` : ""}
+      ${automatic?.enabled || automatic?.error ? html`<div class="control-note" role="status">${automatic.reason}${automatic.enabled && automatic.outdoor_c !== null ? ` · Outside ${this._temp(automatic.outdoor_c)}` : ""}</div>` : ""}
       ${status ? html`<div class="control-note" role="status">${status}</div>` : ""}
       ${feedback ? html`<div class="feedback-note">${this._feedbackNote(feedback)}</div>` : ""}
       ${feedback?.mode_disagreement ? html`<div class="control-note">Local and cloud modes differ; comfort commands paused</div>` : ""}
@@ -796,6 +819,7 @@ class ClimadoCard extends LitElement {
       pre_arrival_heat: "Preheating for your arrival",
       heating_not_enabled: "Heating targets are not enabled",
       system_mode_pending: "Waiting for thermostat mode confirmation",
+      fuel_transition: "Changing heating source",
       feedback_mode_mismatch: "Waiting for local and cloud modes to agree",
       thermostat_off: "Thermostat is off",
       windows_open: "Heating and cooling paused; fan unchanged",
@@ -1261,4 +1285,4 @@ window.customCards.push({
   documentation: "https://github.com/tvanbave/climado",
 });
 
-console.info("%c CLIMADO-CARD %c 0.4.0b5 ", "background:#1565c0;color:#fff", "");
+console.info("%c CLIMADO-CARD %c 0.4.0b6 ", "background:#1565c0;color:#fff", "");

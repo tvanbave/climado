@@ -215,6 +215,31 @@ const assert = require('node:assert/strict');
     assert.deepEqual(await page.evaluate(()=>window.calls),[],'Restoration display must not issue controls');
     await page.evaluate(()=>window.report({thermostat_feedback:{source:'local',fresh:false,hvac_mode:'heat',target:21}}));
     assert.equal(await page.locator('.target').textContent(),'—');
+    await page.evaluate(async()=>{
+      const c=window.card;
+      c.hass={...c.hass,services:{climado:{set_system_mode:{},set_fuel_automation:{}}},states:{...c.hass.states,
+        'sensor.climado_control_reason':{state:'night/ecobee-sleep',attributes:{}},
+        'sensor.climado_effective_mode':{...c.hass.states['sensor.climado_effective_mode'],state:'sleep'}}};
+      window.calls=[];
+      await window.report({hvac_mode:'heat',windows_restoring:false,windows_open:false,selected_source:'gas',
+        auto_fuel:{enabled:false},thermostat_feedback:null,system_control:{entry_id:'test',hvac_mode:'heat',cloud_hvac_mode:'heat',
+          heat_source:'gas',modes:['off','cool','heat'],can_start:false,can_stop:true,source_available:true}});
+    });
+    await page.getByRole('button',{name:'Heating source Automatic',exact:true}).click();
+    assert.deepEqual(await page.evaluate(()=>window.calls),[['climado','set_fuel_automation',{entry_id:'test',enabled:true}]]);
+    await page.evaluate(()=>window.report({fuel_control:'ulo',auto_fuel:{enabled:true,outdoor_c:3,reason:'Waiting for the heating cycle to finish'}}));
+    assert.equal(await page.getByRole('button',{name:'Heating source Automatic',exact:true}).getAttribute('aria-pressed'),'true');
+    for(const width of [320,390,1100]) {
+      await page.setViewportSize({width,height:1100});
+      await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+      const boxes=await page.locator('.system-controls,.control-note,.segment').evaluateAll(nodes=>nodes.map(node=>{
+        const r=node.getBoundingClientRect();return {left:r.left,right:r.right,overflow:node.scrollWidth>node.clientWidth+1};
+      }));
+      assert(boxes.every(b=>b.left>=0 && b.right<=width && !b.overflow),JSON.stringify(boxes));
+      await page.screenshot({path:path.join(os.tmpdir(),'climado-ulo-fuel-'+width+'.png'),fullPage:true});
+    }
+    await page.getByRole('button',{name:'Heating source Automatic',exact:true}).click();
+    assert.equal((await page.evaluate(()=>window.calls))[1][2].enabled,false);
     assert.deepEqual(errors,[]);
     console.log('Targets, source draft, explicit Heat request, observed state and Windows guards passed; no page errors.');
   } finally { await browser.close(); }

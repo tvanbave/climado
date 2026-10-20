@@ -238,7 +238,8 @@ comfort profiles. With the system Off, **Next heating source** selects Heat
 pump or Gas furnace locally without starting equipment; press Heat to start
 that source. The draft defaults to Heat pump on a fresh card load and is not a
 persisted backend preference. Turning off heating through this card retains
-the observed source as its next local choice. **Automatic** remains disabled.
+the observed source as its next local choice. The provisional ULO controller
+below enables **Automatic** once Heat mode is confirmed.
 
 Active systems must be switched Off before changing system mode or source.
 Starts require supported modes, an available Aux switch for heating, and fresh
@@ -354,12 +355,42 @@ without logging every unchanged sample. No estimated savings or fuel commands
 are derived from missing inputs. See `docs/releases/0.4.0b1-checklist.md` for the
 publication and supervised equipment checks that remain.
 
-`fuel_policy.py` is a pure simulation of eligibility, comfort requirements,
-minimum dwell and manual-override rules. It has no service adapter or automatic
-switching option. Equipment capacity, interlocks, minimum on/off times, confirmed
-handoff, persisted transitions and failure fallback still need implementation
-and supervised validation. The historical Union South M1 gas preset expires
-October 1, 2026. Research and outstanding equipment inputs are in the release plan.
+`fuel_policy.py` remains a pure simulation for future measured-cost selection.
+The separate provisional ULO controller below does not consume advisory prices
+or claim verified savings. Matched-coil performance and automatic comfort
+fallback remain future work.
+
+### Provisional ULO fuel control (0.4.0b6)
+
+Configure an **Outdoor temperature sensor** in Climado options, enable heating
+targets and Climado control, and confirm Heat mode. Then press **Automatic** in
+the card's Heating source row. Press it again to disable this policy. The
+`climado.set_fuel_automation` service accepts `entry_id` and `enabled`.
+
+- During the configured ultra-low tier, choose gas at or below **2 C**, and
+  choose the heat pump above **4 C**. Between those boundaries, keep the source.
+- During all other tiers, including weekend daytime, choose gas.
+- Start a handoff only after 30 minutes on the selected source and after the
+  current heating cycle ends. This is a preference, not an immediate cutoff.
+- Confirm Off and idle equipment, wait five continuous minutes with valid
+  feedback, then send one start command. Recheck weather and tier before start.
+  Ecobee confirms fuel; generic HomeKit Heat never confirms the heating source.
+- Fresh Celsius outdoor data (under 15 minutes) and mode/fuel data (under 10
+  minutes) are required. Missing data holds the current source. If local
+  feedback is configured, it must also be fresh and agree with cloud mode.
+- Windows pause and disabled Climado heating control take precedence. Explicit
+  manual system commands disable Automatic. A manual fuel/mode change observed
+  outside a transition also disables it.
+- Requests are persisted before sending, with no automatic command retry.
+  Restart during a handoff or an interrupted/failed handoff disables Automatic
+  and raises an alert; the system may remain Off and needs manual attention.
+  Restart outside a handoff restores the choice with a new 30-minute dwell.
+
+This temporary rule uses the agreed November-rate assumption, not a verified
+installed-system COP curve. It does not automatically change with tariffs.
+There is no automatic fallback for inadequate heat output yet; heating alerts
+remain active. Fan settings and comfort profiles are unchanged. Supervised live
+handoff validation is required after installation.
 
 ### Test commands
 

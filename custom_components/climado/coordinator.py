@@ -105,6 +105,7 @@ from .window_contacts import WindowContacts
 from .fuel import aux_selection, find_aux_entity, running_source, selected_source
 from .advisory import heat_advisory
 from .system import SystemControl
+from .auto_fuel import AutoFuel
 from .feedback import ThermostatFeedback
 from .alerts import HeatingAlerts
 from .temperature import INDOOR_MAX_AGE, temperature_reading
@@ -180,6 +181,7 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         self.feedback = ThermostatFeedback(self)
         self.windows.request_refresh = self.feedback.request_refresh
         self.system = SystemControl(self)
+        self.auto_fuel = AutoFuel(self)
         self.alerts = HeatingAlerts(self)
         self._last_fuel_observation = None
 
@@ -289,6 +291,7 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         self.windows.aux_entity = self._aux_entity
         await self.windows.async_load()
         await self.system.async_load()
+        await self.auto_fuel.load()
         if self.windows.busy:
             await self.system.async_cancel()
         saved = await self._store.async_load()
@@ -433,6 +436,8 @@ class ClimadoCoordinator(DataUpdateCoordinator):
             candidates.append(now + timedelta(minutes=1))
         if self.system.pending:
             candidates.extend([now + timedelta(seconds=5), dt_util.as_local(self.system.pending["until"])])
+        if self.auto_fuel.enabled:
+            candidates.append(now + timedelta(seconds=5 if self.auto_fuel.phase else 30))
         cost_options = self._cost_options()
         if cost_options.get("enabled"):
             # State reports can renew freshness without a state_changed event.
@@ -770,9 +775,16 @@ class ClimadoCoordinator(DataUpdateCoordinator):
     async def async_set_system_mode(self, mode, source=None, context=None):
         try:
             async with self._evaluation_lock:
+                if self.auto_fuel.enabled or self.auto_fuel.phase:
+                    await self.auto_fuel.set_enabled(False)
                 await self.system.async_set(mode, source, context)
         finally:
             await self.async_refresh()
+
+    async def async_set_fuel_automation(self, enabled):
+        async with self._evaluation_lock:
+            await self.auto_fuel.set_enabled(enabled)
+        await self.async_refresh()
 
     async def async_set_windows_open(self, active):
         async with self._evaluation_lock:
@@ -813,6 +825,9 @@ class ClimadoCoordinator(DataUpdateCoordinator):
     async def _evaluate(self) -> dict:
         self.system.confirm()
         await self._evaluate_auto_windows()
+        fuel_transition = await self.auto_fuel.step(
+            self._plan().tier_at(dt_util.now(), self._is_workday()).tier_id
+        )
         released_before_pause = self._released
         self._sync_hvac_context()
         control_context = self._hvac_context
@@ -862,6 +877,9 @@ class ClimadoCoordinator(DataUpdateCoordinator):
             control_context = self._hvac_context
             self._released = released
             plan = self._plan()
+
+        if fuel_transition:
+            return self._state("inactive", "fuel_transition", None, plan.tier_at(now, is_workday), occupied, is_night, rate_plan=plan_to_dict(plan))
 
         if self.system.pending:
             return self._state("inactive", "system_mode_pending", None, plan.tier_at(now, is_workday), occupied, is_night, rate_plan=plan_to_dict(plan))
@@ -1073,7 +1091,8 @@ class ClimadoCoordinator(DataUpdateCoordinator):
             "thermostat_updated_at": self.feedback.cloud().last_reported.isoformat() if self.feedback.cloud() else None,
             "hvac_mode": self._hvac_mode(),
             "heating_enabled": self.opt(CONF_HEATING_ENABLED, False),
-            "fuel_control": "manual",
+            "fuel_control": "ulo" if self.auto_fuel.enabled else "manual",
+            "auto_fuel": self.auto_fuel.snapshot(),
             "aux_heat": self._aux_selection(),
             "aux_heat_entity": self._aux_entity,
             "fuel_discovery_error": self._fuel_discovery_error,

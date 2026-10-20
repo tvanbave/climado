@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.4.0b6 - Provisional ULO Fuel Control
+
+- Add opt-in Automatic fuel selection: gas at or below 2 C and heat pump above
+  4 C during ultra-low hours, retaining the source between thresholds. Prefer
+  gas in all other tiers.
+- Wait for the heating cycle to finish, enforce 30-minute source dwell and a
+  five-minute confirmed Off interval, then confirm the requested fuel.
+- Require fresh outdoor, thermostat and fuel feedback; retain Windows pause,
+  manual override and disabled-control precedence. Failures and interrupted
+  handoffs require manual attention and never replay equipment commands.
+- Add card status and regression tests. Live installation/validation pending.
+
 ## 0.4.0b5 - Clearer Window Restoration Status
 
 - Show a fresh, matching HomeKit target as locally reported during Windows

@@ -141,6 +141,7 @@ class ClimadoSensor(CoordinatorEntity, SensorEntity):
                 "windows_error": data.get("windows_error"),
                 "heating_enabled": data.get("heating_enabled"),
                 "fuel_control": data.get("fuel_control"),
+                "auto_fuel": data.get("auto_fuel"),
                 "selected_source": data.get("selected_source"),
                 "running_source": data.get("running_source"),
                 "aux_heat_entity": data.get("aux_heat_entity"),

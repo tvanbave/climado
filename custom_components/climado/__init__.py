@@ -25,6 +25,7 @@ from .const import (
     SERVICE_CLEAR_PREARRIVAL,
     SERVICE_SET_RATE_PLAN,
     SERVICE_SET_SYSTEM_MODE,
+    SERVICE_SET_FUEL_AUTOMATION,
     SERVICE_START_PREARRIVAL,
     VERSION,
 )
@@ -87,6 +88,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 SERVICE_CLEAR_PREARRIVAL,
                 SERVICE_SET_RATE_PLAN,
                 SERVICE_SET_SYSTEM_MODE,
+                SERVICE_SET_FUEL_AUTOMATION,
             ):
                 hass.services.async_remove(DOMAIN, service)
     return unloaded
@@ -136,6 +138,17 @@ def _register_services(hass: HomeAssistant) -> None:
         if coordinator is None:
             raise ServiceValidationError("Climado entry is not loaded")
         await coordinator.async_set_system_mode(call.data["hvac_mode"], call.data.get("heat_source"), call.context)
+
+    async def _handle_fuel(call: ServiceCall) -> None:
+        coordinator = hass.data.get(DOMAIN, {}).get(call.data["entry_id"])
+        if coordinator is None:
+            raise ServiceValidationError("Climado entry is not loaded")
+        await coordinator.async_set_fuel_automation(call.data["enabled"])
+
+    hass.services.async_register(DOMAIN, SERVICE_SET_FUEL_AUTOMATION, _handle_fuel, schema=vol.Schema({
+        vol.Required("entry_id"): str,
+        vol.Required("enabled"): vol.Boolean(),
+    }))
 
     hass.services.async_register(DOMAIN, SERVICE_SET_SYSTEM_MODE, _handle_system, schema=vol.Schema({
         vol.Required("entry_id"): str,

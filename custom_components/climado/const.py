@@ -4,7 +4,7 @@ from __future__ import annotations
 from homeassistant.const import Platform
 
 DOMAIN = "climado"
-VERSION = "0.4.0b5"
+VERSION = "0.4.0b6"
 
 PLATFORMS = [
     Platform.SELECT,
@@ -106,6 +106,7 @@ SERVICE_START_PREARRIVAL = "start_pre_arrival"
 SERVICE_CLEAR_PREARRIVAL = "clear_pre_arrival"
 SERVICE_SET_RATE_PLAN = "set_rate_plan"
 SERVICE_SET_SYSTEM_MODE = "set_system_mode"
+SERVICE_SET_FUEL_AUTOMATION = "set_fuel_automation"
 ATTR_PLAN = "plan"
 
 ATTR_LEAD_MINUTES = "lead_minutes"

@@ -95,3 +95,16 @@ set_rate_plan:
       required: true
       selector:
         object:
+
+set_fuel_automation:
+  name: Set automatic fuel selection
+  description: Enable or disable provisional ULO fuel control. Requires confirmed Heat mode and a configured outdoor temperature sensor. Gas at or below 2 C; heat pump above 4 C overnight; gas during other tiers.
+  fields:
+    entry_id:
+      required: true
+      selector:
+        text:
+    enabled:
+      required: true
+      selector:
+        boolean:

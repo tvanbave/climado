@@ -75,7 +75,8 @@ class HeatingAlerts:
             self._cold_seen = None
 
         system = data.get("system_control", {})
-        error = system.get("error") or data.get("windows_error") or data.get("command_error")
+        error = (system.get("error") or data.get("windows_error") or data.get("command_error")
+                 or data.get("auto_fuel", {}).get("error"))
         if error:
             issues.append({"code": "command_failed", "message": f"Thermostat command needs attention: {error}"})
 

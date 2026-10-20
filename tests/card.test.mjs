@@ -285,6 +285,31 @@ test("automatic, unavailable, Windows paused and unsupported modes do not dispat
   assert.match(item.render(), /Automatic fuel selection is not available/);
 });
 
+test("Automatic is an explicit backend policy toggle, not a direct HVAC command", async () => {
+  const item = systemCard({ hvac_mode: "heat", cloud_hvac_mode: "heat", heat_source: "gas", can_start: false });
+  item.hass.services.climado.set_fuel_automation = {};
+  const attrs = item.hass.states["sensor.climado_effective_mode"].attributes;
+  attrs.auto_fuel = { enabled: false };
+  await item._toggleFuelAutomation(item._entities());
+  assert.equal(JSON.stringify(item.calls), JSON.stringify([["climado", "set_fuel_automation", {entry_id:"test", enabled:true}]]));
+  assert.doesNotMatch(item.render(), /Heating source Automatic aria-pressed=true/);
+  attrs.auto_fuel = { enabled: true, outdoor_c: 3, reason: "Keeping current heating source" };
+  assert.match(item.render(), /Heating source Automatic aria-pressed=true/);
+  assert.match(item.render(), /Keeping current heating source/);
+  await item._toggleFuelAutomation(item._entities());
+  assert.equal(item.calls[1][2].enabled, false);
+});
+
+test("Automatic backend failure is visible and does not claim activation", async () => {
+  const item = systemCard({ hvac_mode: "heat", heat_source: "gas", can_start: false });
+  item.hass.services.climado.set_fuel_automation = {};
+  item.hass.callService = async () => { throw new Error("Configure outdoor temperature"); };
+  await item._toggleFuelAutomation(item._entities());
+  assert.equal(item._systemBusy, false);
+  assert.match(item.render(), /Configure outdoor temperature/);
+  assert.doesNotMatch(item.render(), /Heating source Automatic aria-pressed=true/);
+});
+
 test("pending confirmation blocks new starts but allows an explicit Off", async () => {
   const item = systemCard({ can_start: false, pending: { mode: "heat", source: "gas" } });
   assert.match(item.render(), /Waiting for thermostat confirmation/);
