@@ -745,6 +745,7 @@ class ClimadoCard extends LitElement {
             <ha-icon .icon=${icon}></ha-icon><span>${label}</span>
           </button>`)}
       </div>
+      ${this._renderAutomaticSource(e, system, automatic, feedback)}
       ${!system.source_available ? html`<div class="control-note">Heating source unavailable</div>` : ""}
       ${automatic?.enabled || automatic?.error ? html`<div class="control-note" role="status">${automatic.reason}${automatic.enabled && automatic.outdoor_c !== null ? ` · Outside ${this._temp(automatic.outdoor_c)}` : ""}</div>` : ""}
       ${status ? html`<div class="control-note" role="status">${status}</div>` : ""}
@@ -753,6 +754,34 @@ class ClimadoCard extends LitElement {
       ${feedback?.refresh_error ? html`<div class="control-note">Status refresh delayed; no equipment command repeated</div>` : ""}
       ${error ? html`<div class="system-error" role="alert">${error}</div>` : ""}
     </section>`;
+  }
+
+  _renderAutomaticSource(e, system, automatic, feedback) {
+    if (!automatic?.enabled) return html``;
+    const a = key => this._attr(e.effective_mode, key);
+    const validSource = source => ["gas", "heat_pump"].includes(source);
+    let title = "Automatic · Source unconfirmed";
+    let detail = "Waiting for Ecobee confirmation";
+    let icon = "mdi:auto-mode";
+    if (a("windows_open") || a("windows_restoring")) {
+      title = "Automatic paused";
+      detail = a("windows_restoring") ? "Restoring after windows pause" : "Windows open";
+    } else if (automatic.phase) {
+      title = validSource(automatic.target) ? `Switching to ${this._fuelLabel(automatic.target)}` : "Changing heating source";
+      detail = "Waiting for source confirmation";
+    } else if (system.hvac_mode === "off") {
+      title = "Automatic paused";
+      detail = "System off";
+    } else if (system.hvac_mode === "heat" && system.source_available && !system.pending
+      && !feedback?.mode_disagreement && validSource(system.heat_source)) {
+      title = `Automatic · ${this._fuelLabel(system.heat_source)}`;
+      const activity = feedback?.source === "local" && feedback.fresh ? feedback.hvac_action : a("hvac_action");
+      detail = `Selected source · ${this._hvacInfo(activity).label}`;
+      icon = system.heat_source === "gas" ? "mdi:fire" : "mdi:heat-pump";
+    }
+    return html`<div class="automatic-source" role="status" aria-label="Automatic heating source">
+      <ha-icon .icon=${icon}></ha-icon><div><strong>${title}</strong><span>${detail}</span></div>
+    </div>`;
   }
 
   _renderHeatingTargets(e) {
@@ -945,6 +974,11 @@ class ClimadoCard extends LitElement {
       .target-inputs input { box-sizing: border-box; width: 100%; min-width: 0; height: 40px; font: inherit; font-size: 16px; background: var(--card-background-color, white); color: var(--primary-text-color); border: 1px solid var(--divider-color); border-radius: 4px; padding: 6px; }
       .system-controls { padding: 12px 0; border-top: 1px solid var(--divider-color); border-bottom: 1px solid var(--divider-color); }
       .system-label { font-size: 13px; font-weight: 600; margin: 0 0 6px; }
+      .automatic-source { display: flex; align-items: center; gap: 10px; margin: 4px 0 12px; }
+      .automatic-source ha-icon { flex: 0 0 24px; color: var(--primary-color); }
+      .automatic-source > div { display: flex; flex-direction: column; gap: 4px; min-width: 0; overflow-wrap: anywhere; }
+      .automatic-source strong { font-size: 14px; }
+      .automatic-source span { font-size: 12px; color: var(--secondary-text-color); }
       .segments { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin-bottom: 12px; border: 1px solid var(--divider-color); border-radius: 6px; overflow: hidden; }
       .electricity-plan { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-bottom: 14px; }
       .rate-segments { grid-template-columns: repeat(2, minmax(0, 1fr)); width: 132px; flex: 0 0 132px; margin: 0; }
@@ -1330,4 +1364,4 @@ window.customCards.push({
   documentation: "https://github.com/tvanbave/climado",
 });
 
-console.info("%c CLIMADO-CARD %c 0.4.0b7 ", "background:#1565c0;color:#fff", "");
+console.info("%c CLIMADO-CARD %c 0.4.0b8 ", "background:#1565c0;color:#fff", "");

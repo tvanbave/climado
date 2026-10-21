@@ -229,10 +229,11 @@ const assert = require('node:assert/strict');
     assert.deepEqual(await page.evaluate(()=>window.calls),[['climado','set_fuel_automation',{entry_id:'test',enabled:true}]]);
     await page.evaluate(()=>window.report({fuel_control:'ulo',auto_fuel:{enabled:true,outdoor_c:3,reason:'Waiting for the heating cycle to finish'}}));
     assert.equal(await page.getByRole('button',{name:'Heating source Automatic',exact:true}).getAttribute('aria-pressed'),'true');
+    await page.getByText('Automatic · Gas furnace',{exact:true}).waitFor();
     for(const width of [320,390,1100]) {
       await page.setViewportSize({width,height:1100});
       await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
-      const boxes=await page.locator('.system-controls,.control-note,.segment').evaluateAll(nodes=>nodes.map(node=>{
+      const boxes=await page.locator('.system-controls,.control-note,.segment,.automatic-source').evaluateAll(nodes=>nodes.map(node=>{
         const r=node.getBoundingClientRect();return {left:r.left,right:r.right,overflow:node.scrollWidth>node.clientWidth+1};
       }));
       assert(boxes.every(b=>b.left>=0 && b.right<=width && !b.overflow),JSON.stringify(boxes));

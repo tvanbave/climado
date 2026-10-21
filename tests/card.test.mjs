@@ -227,6 +227,48 @@ function restoringCard(overrides = {}) {
   return item;
 }
 
+test("Automatic identifies both selected sources independently of activity and next intent", () => {
+  for (const [source, label] of [["gas", "Gas furnace"], ["heat_pump", "Heat pump"]]) {
+    const item = systemCard({hvac_mode:"heat",heat_source:source});
+    const attrs = item.hass.states["sensor.climado_effective_mode"].attributes;
+    Object.assign(attrs, {auto_fuel:{enabled:true,target:source === "gas" ? "heat_pump" : "gas"},hvac_action:"idle"});
+    const render = () => item._renderAutomaticSource(item._entities(), attrs.system_control, attrs.auto_fuel, attrs.thermostat_feedback);
+    assert.match(render(), new RegExp(`Automatic · ${label}`));
+    assert.match(render(), /Selected source · Idle/);
+    attrs.thermostat_feedback = {source:"local",fresh:true,hvac_action:"heating"};
+    assert.match(render(), /Selected source · Heating/);
+    attrs.thermostat_feedback.hvac_action = "fan";
+    assert.match(render(), /Selected source · Fan only/);
+    attrs.auto_fuel.enabled = false;
+    assert.equal(render(), "");
+  }
+});
+
+test("Automatic source status distinguishes handoff, pause and unconfirmed fuel", () => {
+  const item = systemCard({hvac_mode:"heat",heat_source:"gas"});
+  const attrs = item.hass.states["sensor.climado_effective_mode"].attributes;
+  attrs.auto_fuel = {enabled:true,phase:"stopping",target:"heat_pump"};
+  const render = () => item._renderAutomaticSource(item._entities(), attrs.system_control, attrs.auto_fuel, attrs.thermostat_feedback);
+  assert.match(render(), /Switching to Heat pump/);
+  assert.doesNotMatch(render(), /Selected source/);
+  attrs.windows_open = true;
+  assert.match(render(), /Automatic paused/);
+  assert.match(render(), /Windows open/);
+  attrs.windows_open = false;
+  attrs.auto_fuel.phase = null;
+  for (const changes of [{source_available:false}, {pending:{mode:"heat"}}, {heat_source:null}]) {
+    const previous = {...attrs.system_control};
+    Object.assign(attrs.system_control, changes);
+    assert.match(render(), /Source unconfirmed/);
+    attrs.system_control = previous;
+  }
+  attrs.thermostat_feedback = {mode_disagreement:true};
+  assert.match(render(), /Source unconfirmed/);
+  attrs.system_control.hvac_mode = "off";
+  assert.match(render(), /Automatic paused/);
+  assert.match(render(), /System off/);
+});
+
 test("restoration shows locally reported target and saved fuel intent without confirming fuel", async () => {
   const item = restoringCard();
   const view = item.render();

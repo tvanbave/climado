@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.0b8 - Automatic Fuel Status
+
+- Show the selected heat pump or gas furnace prominently below Automatic,
+  with a separate Heating, Idle or Fan only status.
+- Distinguish source changeovers, windows pauses and unconfirmed source feedback.
+- Display-only change; fuel policy and thermostat commands are unchanged.
+
 ## 0.4.0b7 - Electricity Plan And Energy Price
 
 - Add a persisted ULO/TOU selector and current published CAD energy price/kWh
