@@ -127,7 +127,26 @@ persists it via `climado.set_rate_plan` (weekday + weekend/holiday schedules). T
 card reads the live plan back from the rate-tier sensor, and **Reset** reverts to
 the saved plan. On-peak coast and pre-cool lead/depth remain device number entities.
 
+## Electricity Plan And Price
+The card's **ULO / TOU** selector saves Climado's electricity plan. It changes
+the rate timeline and cooling rate schedule, not the utility account's billing
+plan. TOU automatically uses summer/winter schedules and the configured workday
+sensor for holidays. ULO preserves existing custom schedule overrides, if any;
+TOU uses the Ontario preset and leaves those saved overrides untouched.
+
+The current price is the published **energy-only CAD/kWh** rate, displayed in
+cents/kWh. It excludes delivery, tax and rebates. Dated prices cover November
+2025 through October 2027, with the new prices applied on November 1, 2026;
+outside that range the price is unavailable until updated. The price remains
+visible when HVAC or Climado control is off.
+
+Selecting TOU disables the temporary ULO fuel policy and keeps the current
+heating source. Returning to ULO does not automatically re-enable it. ULO
+heat-cost estimates are suppressed on TOU; they are separate from the published
+energy price shown on the card. Plan changes wait until any source handoff ends.
+
 ## Roadmap
+
 - **Next feature release: proposed v0.4.0** Heating profiles and dual-fuel
   readiness. Automatic heat-pump/gas selection is gated on verified equipment
   details and controls. See the [heating release plan](docs/releases/0.4.0-heating-plan.md)

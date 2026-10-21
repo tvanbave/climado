@@ -9,7 +9,7 @@ from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.util import dt as dt_util
 
-from .const import DOMAIN, MODE_AUTO, SELECT_MODES
+from .const import CONF_ELECTRICITY_PLAN, DOMAIN, MODE_AUTO, SELECT_MODES
 from .coordinator import ClimadoCoordinator
 from .entity import device_info
 
@@ -18,7 +18,32 @@ async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
     coordinator: ClimadoCoordinator = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities([ClimadoModeSelect(coordinator, entry)])
+    async_add_entities([ClimadoModeSelect(coordinator, entry), ClimadoElectricityPlanSelect(coordinator, entry)])
+
+
+class ClimadoElectricityPlanSelect(CoordinatorEntity, SelectEntity):
+    """Persisted utility-plan selection, independent of comfort mode."""
+
+    _attr_has_entity_name = True
+    _attr_name = "Electricity plan"
+    _attr_icon = "mdi:transmission-tower"
+    _attr_options = ["ULO", "TOU"]
+
+    def __init__(self, coordinator, entry):
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{entry.entry_id}_electricity_plan"
+        self._attr_device_info = device_info(entry)
+
+    @property
+    def current_option(self):
+        return self.coordinator.opt(CONF_ELECTRICITY_PLAN, "ULO")
+
+    @property
+    def extra_state_attributes(self):
+        return {"climado_key": CONF_ELECTRICITY_PLAN}
+
+    async def async_select_option(self, option):
+        await self.coordinator.async_set_electricity_plan(option)
 
 
 class ClimadoModeSelect(CoordinatorEntity, SelectEntity, RestoreEntity):

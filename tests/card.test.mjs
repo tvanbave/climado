@@ -29,6 +29,41 @@ function card(attributes) {
   return card;
 }
 
+test("electricity plan discovery survives rename without replacing the comfort selector", async () => {
+  const item = card({electricity_plan:"ULO"});
+  item.hass.states['select.utility_choice'] = {state:'ULO',attributes:{climado_key:'electricity_plan'}};
+  item.hass.entities['select.utility_choice'] = {device_id:'test'};
+  item.hass.states['sensor.climado_rate_tier'] = {state:'Mid-peak',attributes:{electricity_plan:'ULO',tier_id:'mid_peak',
+    electricity_price:{status:'ready',per_kwh:.157,basis:'energy_only'}}};
+  item.hass.entities['sensor.climado_rate_tier'] = {device_id:'test'};
+  const e=item._entities();
+  assert.equal(e.mode,'select.climado_mode');
+  assert.equal(e.electricity_plan,'select.utility_choice');
+  assert.match(item.render(),/15.7¢\/kWh/);
+  assert.match(item.render(),/Energy only · CAD/);
+  let call;
+  item.hass.callService=async(...args)=>{call=args;};
+  await item._setElectricityPlan(e,'TOU');
+  assert.equal(JSON.stringify(call),JSON.stringify(['select','select_option',{entity_id:'select.utility_choice',option:'TOU'}]));
+  assert.equal(item.hass.states['select.utility_choice'].state,'ULO');
+  item.hass.states['sensor.climado_rate_tier'].attributes.electricity_price={status:'unavailable',per_kwh:null};
+  assert.doesNotMatch(item.render(),/15.7¢\/kWh|0.0¢\/kWh/);
+});
+
+test("plan control is blocked during handoff and reports failed changes", async () => {
+  const item=card({auto_fuel:{phase:'stopping'}});
+  item.hass.states['select.climado_electricity_plan']={state:'ULO',attributes:{climado_key:'electricity_plan'}};
+  item.hass.entities['select.climado_electricity_plan']={device_id:'test'};
+  let called=false;
+  item.hass.callService=async()=>{called=true;throw new Error('Could not save plan');};
+  await item._setElectricityPlan(item._entities(),'TOU');
+  assert.equal(called,false);
+  item.hass.states['sensor.climado_effective_mode'].attributes.auto_fuel.phase=null;
+  await item._setElectricityPlan(item._entities(),'TOU');
+  assert.match(item.render(),/Could not save plan/);
+  assert.equal(item._rateBusy,false);
+});
+
 test("pending Sleep shows an unconfirmed target and waiting status", () => {
   const view = card({ command_pending: true, regulating: "bedroom", hvac_action: "idle" }).render();
   assert.match(view, /Waiting for thermostat confirmation/);

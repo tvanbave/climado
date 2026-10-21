@@ -4,7 +4,7 @@ from __future__ import annotations
 from homeassistant.const import Platform
 
 DOMAIN = "climado"
-VERSION = "0.4.0b6"
+VERSION = "0.4.0b7"
 
 PLATFORMS = [
     Platform.SELECT,
@@ -31,6 +31,7 @@ CONF_WINDOW_CLOSE_DELAY = "window_close_delay_minutes"
 DEFAULT_WINDOW_OPEN_DELAY = 5
 DEFAULT_WINDOW_CLOSE_DELAY = 2
 CONF_RATE_PLAN = "rate_plan"  # custom schedule {weekday:[[s,e,tier]...], weekend:[...]}
+CONF_ELECTRICITY_PLAN = "electricity_plan"
 CONF_HEATING_ENABLED = "heating_enabled"
 CONF_AUX_HEAT_SWITCH = "aux_heat_switch"
 CONF_OUTDOOR_TEMP_SENSOR = "outdoor_temp_sensor"

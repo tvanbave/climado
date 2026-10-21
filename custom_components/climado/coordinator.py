@@ -66,6 +66,7 @@ from .const import (
     CONF_PRECOOL_LEAD,
     CONF_PRESENCE_ENTITIES,
     CONF_RATE_PLAN,
+    CONF_ELECTRICITY_PLAN,
     CONF_VACATION_TEMP,
     CONF_WORKDAY_SENSOR,
     CONF_AUTO_WINDOWS,
@@ -99,7 +100,7 @@ from .const import (
     MODE_SLEEP,
     MODE_VACATION,
 )
-from .rate import default_ulo_plan, plan_from_schedule, plan_to_dict, rate_offset
+from .rate import default_ulo_plan, default_tou_plan, electricity_price, plan_from_schedule, plan_to_dict, rate_offset
 from .windows import WindowsPause
 from .window_contacts import WindowContacts
 from .fuel import aux_selection, find_aux_entity, running_source, selected_source
@@ -728,8 +729,10 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         lead = int(self.tune(CONF_PRECOOL_LEAD, DEFAULT_PRECOOL_LEAD))
         depth = float(self.tune(CONF_PRECOOL_DEPTH, DEFAULT_PRECOOL_DEPTH))
         if self._hvac_mode() != "cool":
-            # Fuel selection is still manual; no electricity-driven heating offsets.
+            # No electricity-driven heating target offsets.
             coast, lead, depth = 0.0, 0, 0.0
+        if self.opt(CONF_ELECTRICITY_PLAN, "ULO") == "TOU":
+            return default_tou_plan(dt_util.now(), coast, lead, depth)
         custom = self.opt(CONF_RATE_PLAN)
         if isinstance(custom, dict) and custom.get("weekday") and custom.get("weekend"):
             try:
@@ -786,6 +789,21 @@ class ClimadoCoordinator(DataUpdateCoordinator):
             await self.auto_fuel.set_enabled(enabled)
         await self.async_refresh()
 
+    async def async_set_electricity_plan(self, plan):
+        from homeassistant.exceptions import ServiceValidationError
+
+        if plan not in ("ULO", "TOU"):
+            raise ServiceValidationError("Choose ULO or TOU")
+        async with self._evaluation_lock:
+            if self.auto_fuel.phase:
+                raise ServiceValidationError("Wait for the heating-source change to finish")
+            if plan == "TOU" and self.auto_fuel.enabled:
+                await self.auto_fuel.set_enabled(False)
+            self.hass.config_entries.async_update_entry(
+                self.entry, options={**self.entry.options, CONF_ELECTRICITY_PLAN: plan}
+            )
+        await self.async_request_refresh()
+
     async def async_set_windows_open(self, active):
         async with self._evaluation_lock:
             await self.windows.async_set_active(active)
@@ -801,9 +819,19 @@ class ClimadoCoordinator(DataUpdateCoordinator):
                 data = await self._evaluate()
                 now = dt_util.now()
                 tier = self._plan().tier_at(now, self._is_workday())
+                scheme = self.opt(CONF_ELECTRICITY_PLAN, "ULO")
+                data.update(electricity_plan=scheme,
+                            electricity_price=electricity_price(scheme, tier.tier_id, now),
+                            tier=tier.name, tier_id=tier.tier_id, rate_plan=plan_to_dict(self._plan()))
                 data["heat_advisory"] = heat_advisory(
                     self.hass, self.opt(CONF_HEAT_COST, {}), self.opt(CONF_OUTDOOR_TEMP_SENSOR), tier.tier_id, now,
                 )
+                if scheme == "TOU":
+                    data["heat_advisory"] = {
+                        "status": "unavailable", "reason": "rate_plan_mismatch",
+                        "preferred_source": None, "automatic_switching": False,
+                        "tier_id": tier.tier_id,
+                    }
                 advisory = data["heat_advisory"]
                 advisory.update(observation_only=True, selected_source=data.get("selected_source"))
                 observation = (advisory["status"], advisory.get("preferred_source"), advisory["reason"], data.get("selected_source"))

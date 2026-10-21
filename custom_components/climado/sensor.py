@@ -27,6 +27,11 @@ class ClimadoSensorDescription(SensorEntityDescription):
 
 SENSORS: tuple[ClimadoSensorDescription, ...] = (
     ClimadoSensorDescription(
+        key="electricity_price", name="Electricity energy price", icon="mdi:cash",
+        native_unit_of_measurement="CAD/kWh",
+        value_fn=lambda d: d.get("electricity_price", {}).get("per_kwh"),
+    ),
+    ClimadoSensorDescription(
         key="heating_alert", name="Heating alert", icon="mdi:alert-outline",
         value_fn=lambda d: d.get("heating_alerts", {}).get("status"),
     ),
@@ -141,6 +146,7 @@ class ClimadoSensor(CoordinatorEntity, SensorEntity):
                 "windows_error": data.get("windows_error"),
                 "heating_enabled": data.get("heating_enabled"),
                 "fuel_control": data.get("fuel_control"),
+                "electricity_plan": data.get("electricity_plan"),
                 "auto_fuel": data.get("auto_fuel"),
                 "selected_source": data.get("selected_source"),
                 "running_source": data.get("running_source"),
@@ -172,10 +178,14 @@ class ClimadoSensor(CoordinatorEntity, SensorEntity):
             }
         if self.entity_description.key == "fuel_recommendation":
             return data.get("heat_advisory", {})
+        if self.entity_description.key == "electricity_price":
+            return data.get("electricity_price", {})
         if self.entity_description.key == "heating_alert":
             return data.get("heating_alerts", {})
         if self.entity_description.key == "rate_tier":
             return {
+                "electricity_plan": data.get("electricity_plan"),
+                "electricity_price": data.get("electricity_price"),
                 "plan": data.get("rate_plan"),
                 "tier_id": data.get("tier_id"),
                 "profile": data.get("rate_profile"),

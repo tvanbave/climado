@@ -240,6 +240,42 @@ const assert = require('node:assert/strict');
     }
     await page.getByRole('button',{name:'Heating source Automatic',exact:true}).click();
     assert.equal((await page.evaluate(()=>window.calls))[1][2].enabled,false);
+    await page.evaluate(async()=>{
+      const c=window.card;
+      c.hass={...c.hass,entities:{...c.hass.entities,'select.utility_plan':{device_id:'test'}},states:{...c.hass.states,
+        'select.utility_plan':{state:'ULO',attributes:{climado_key:'electricity_plan'}},
+        'sensor.climado_rate_tier':{state:'Mid-peak',attributes:{tier_id:'mid_peak',profile:'weekday',electricity_plan:'ULO',
+          electricity_price:{status:'ready',basis:'energy_only',per_kwh:.157}}}}};
+      window.calls=[];
+      await c.updateComplete;
+    });
+    await page.getByText('15.7¢/kWh',{exact:true}).waitFor();
+    await page.getByRole('button',{name:'Electricity plan TOU',exact:true}).click();
+    assert.deepEqual(await page.evaluate(()=>window.calls),[['select','select_option',{entity_id:'select.utility_plan',option:'TOU'}]]);
+    await page.evaluate(async()=>{
+      const c=window.card;
+      c.hass={...c.hass,states:{...c.hass.states,'select.utility_plan':{state:'TOU',attributes:{climado_key:'electricity_plan'}},
+        'sensor.climado_rate_tier':{state:'On-peak',attributes:{tier_id:'on_peak',profile:'weekday',electricity_plan:'TOU',
+          electricity_price:{status:'ready',basis:'energy_only',per_kwh:.189},
+          plan:{weekday:[[0,7,'off_peak'],[7,11,'on_peak'],[11,17,'mid_peak'],[17,19,'on_peak'],[19,24,'off_peak']],weekend:[[0,24,'off_peak']]}}}}};
+      await window.report({electricity_plan:'TOU',fuel_control:'manual',auto_fuel:{enabled:false}});
+    });
+    await page.getByText('18.9¢/kWh',{exact:true}).waitFor();
+    assert.equal(await page.getByRole('button',{name:'Electricity plan TOU',exact:true}).getAttribute('aria-pressed'),'true');
+    assert.equal(await page.getByRole('button',{name:'Heating source Automatic',exact:true}).isDisabled(),true);
+    assert.equal(await page.locator('.legend .lg').count(),3);
+    assert.equal(await page.locator('.bar .cell').nth(0).getAttribute('title'),'0:00 — Off-peak');
+    assert.equal(await page.locator('.bar .cell').nth(7).getAttribute('title'),'7:00 — On-peak');
+    assert.equal(await page.locator('.bar .cell').nth(11).getAttribute('title'),'11:00 — Mid-peak');
+    for(const width of [320,390,1100]) {
+      await page.setViewportSize({width,height:1100});
+      await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+      const boxes=await page.locator('.electricity-plan,.rate-segments,.energy-price').evaluateAll(nodes=>nodes.map(node=>{
+        const r=node.getBoundingClientRect();return {left:r.left,right:r.right,overflow:node.scrollWidth>node.clientWidth+1};
+      }));
+      assert(boxes.every(b=>b.left>=0 && b.right<=width && !b.overflow),JSON.stringify(boxes));
+      await page.screenshot({path:path.join(os.tmpdir(),'climado-electricity-plan-'+width+'.png'),fullPage:true});
+    }
     assert.deepEqual(errors,[]);
     console.log('Targets, source draft, explicit Heat request, observed state and Windows guards passed; no page errors.');
   } finally { await browser.close(); }

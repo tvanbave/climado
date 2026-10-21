@@ -5,7 +5,7 @@ from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
-from .const import CONF_HEATING_ENABLED, CONF_OUTDOOR_TEMP_SENSOR
+from .const import CONF_ELECTRICITY_PLAN, CONF_HEATING_ENABLED, CONF_OUTDOOR_TEMP_SENSOR
 from .fuel import running_source, selected_source
 from .temperature import temperature_reading
 
@@ -68,6 +68,8 @@ class AutoFuel:
 
     def _ready(self):
         c = self.c
+        if c.opt(CONF_ELECTRICITY_PLAN, "ULO") != "ULO":
+            return "Automatic fuel selection requires the ULO electricity plan"
         if not c.enabled or not c.opt(CONF_HEATING_ENABLED, False):
             return "Climado heating control is off"
         if c.windows.busy:
@@ -126,6 +128,12 @@ class AutoFuel:
         if not self.enabled:
             return False
         c, now = self.c, dt_util.utcnow()
+        if c.opt(CONF_ELECTRICITY_PLAN, "ULO") != "ULO":
+            if self.phase:
+                await self._fail("Electricity plan changed during handoff; check thermostat")
+            else:
+                await self.set_enabled(False)
+            return False
         if not c.enabled or not c.opt(CONF_HEATING_ENABLED, False) or c.windows.busy:
             self.expected = None
             self.changed = now

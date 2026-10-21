@@ -98,7 +98,7 @@ function numericValue(value) {
 
 class ClimadoCard extends LitElement {
   static get properties() {
-    return { hass: {}, _config: {}, _draft: { state: true }, _heatSource: { state: true }, _systemBusy: { state: true }, _systemError: { state: true } };
+    return { hass: {}, _config: {}, _draft: { state: true }, _heatSource: { state: true }, _systemBusy: { state: true }, _systemError: { state: true }, _rateBusy: { state: true }, _rateError: { state: true } };
   }
 
   static getConfigElement() {
@@ -120,6 +120,8 @@ class ClimadoCard extends LitElement {
     this._heatSource = "heat_pump";
     this._systemBusy = false;
     this._systemError = null;
+    this._rateBusy = false;
+    this._rateError = null;
   }
 
   getCardSize() {
@@ -177,6 +179,7 @@ class ClimadoCard extends LitElement {
     for (const id of ids) {
       const key = this._attr(id, "climado_key");
       if (id.startsWith("number.") && ["heat_home", "heat_away", "heat_vacation", "heat_prearrival"].includes(key)) found[key] = id;
+      else if (id.startsWith("select.") && (key === "electricity_plan" || id.endsWith("_electricity_plan"))) found.electricity_plan = id;
       else if (id.includes("fuel_cost_recommendation") || id.includes("fuel_recommendation")) found.fuel_recommendation = id;
       else if (id.startsWith("select.")) found.mode = id;
       else if (id.includes("effective_mode")) found.effective_mode = id;
@@ -220,6 +223,39 @@ class ClimadoCard extends LitElement {
   }
 
   // ---- actions ----
+  async _setElectricityPlan(e, plan) {
+    if (!this._available(e.electricity_plan) || this._rateBusy || !["ULO", "TOU"].includes(plan)
+      || this._attr(e.effective_mode, "auto_fuel")?.phase) return;
+    if (this._state(e.electricity_plan).state === plan) return;
+    this._rateBusy = true;
+    this._rateError = null;
+    try {
+      await this.hass.callService("select", "select_option", { entity_id: e.electricity_plan, option: plan });
+    } catch (err) {
+      this._rateError = err?.message || "Electricity plan could not be changed";
+    } finally {
+      this._rateBusy = false;
+    }
+  }
+
+  _renderElectricityPlan(e) {
+    const price = this._attr(e.tier, "electricity_price");
+    if (!e.electricity_plan && !price) return html``;
+    const selected = this._state(e.electricity_plan)?.state || this._attr(e.tier, "electricity_plan");
+    const value = price?.status === "ready" ? numericValue(price.per_kwh) : null;
+    return html`<div class="electricity-plan">
+      ${e.electricity_plan ? html`<div class="segments rate-segments" role="group" aria-label="Electricity plan">
+        ${["ULO", "TOU"].map(plan => html`<button class="segment ${selected === plan ? "selected" : ""}"
+          aria-label=${`Electricity plan ${plan}`} aria-pressed=${selected === plan}
+          title=${plan === "ULO" ? "Ultra-low overnight" : "Time-of-use"}
+          ?disabled=${!this._available(e.electricity_plan) || this._rateBusy || !!this._attr(e.effective_mode, "auto_fuel")?.phase}
+          @click=${() => this._setElectricityPlan(e, plan)}>${plan}</button>`)}
+      </div>` : ""}
+      <div class="energy-price"><strong>${value === null ? "Unavailable" : `${(value * 100).toFixed(1)}¢/kWh`}</strong>
+        <span>Energy only · CAD</span></div>
+    </div>${this._rateError ? html`<div class="system-error" role="alert">${this._rateError}</div>` : ""}`;
+  }
+
   async _setHeatingTarget(entity, input) {
     const value = input.value.trim() === "" ? NaN : Number(input.value);
     const min = numericValue(this._attr(entity, "min")) ?? 10;
@@ -396,7 +432,8 @@ class ClimadoCard extends LitElement {
     const modeReady = this._available(e.mode);
     const effectiveReady = this._available(e.effective_mode);
     const controlsReady = modeReady && effectiveReady;
-    const editor = this._config.rate_editor === true;
+    const electricityPlan = this._attr(e.tier, "electricity_plan") || "ULO";
+    const editor = this._config.rate_editor === true && electricityPlan !== "TOU";
     const mode = cleanValue(this._state(e.mode)?.state) || "auto";
     const eff = cleanValue(this._state(e.effective_mode)?.state);
     const reason = cleanValue(this._state(e.reason)?.state);
@@ -600,12 +637,13 @@ class ClimadoCard extends LitElement {
           <span class="hint">${editor ? "tap an hour to change tier" : this._profileLabel(rateProfile)}</span>
           ${dirty && editor ? html`<span class="unsaved">Unsaved changes</span>` : ""}
         </div>
+        ${this._renderElectricityPlan(e)}
         ${editor
           ? html`${this._grid("weekday", "Weekday", true)} ${this._grid("weekend", "Weekend / holiday", true)}`
           : this._grid(rateProfile, this._profileLabel(rateProfile), false)}
 
         <div class="legend">
-          ${Object.entries(TIERS).map(
+          ${Object.entries(TIERS).filter(([id]) => electricityPlan !== "TOU" || id !== "ultra_low").map(
             ([id, t]) =>
               html`<span class="lg"><i style="background:${t.color}"></i>${t.name}</span>`
           )}
@@ -678,7 +716,7 @@ class ClimadoCard extends LitElement {
     const source = automatic?.enabled ? "auto" : this._attr(e.effective_mode, "windows_restoring") === true
       ? null : heating ? system.heat_source : this._heatSource;
     const autoReady = !!this.hass.services?.climado?.set_fuel_automation && !this._systemBusy
-      && (automatic?.enabled || (heating && !system.pending && system.source_available
+      && (automatic?.enabled || (this._attr(e.effective_mode, "electricity_plan") !== "TOU" && heating && !system.pending && system.source_available
         && !this._attr(e.effective_mode, "windows_open") && !this._attr(e.effective_mode, "windows_restoring")));
     const sourceReady = this._canChooseHeatSource(system);
     const error = this._systemError || system.error;
@@ -761,6 +799,7 @@ class ClimadoCard extends LitElement {
       outdoor_unavailable: "Outdoor sensor unavailable", outdoor_stale: "Outdoor reading is stale",
       outdoor_unit: "Outdoor sensor must report Celsius", electricity_tariff_expired: "Electricity prices outside their valid dates",
       gas_tariff_expired: "Gas prices outside their valid dates", outside_cop_range: "Outside the performance table temperature range",
+      rate_plan_mismatch: "Heating cost estimates are configured for ULO",
       invalid_inputs: "Cost inputs need attention",
     };
     if (disabled || data.status !== "ready") {
@@ -877,7 +916,7 @@ class ClimadoCard extends LitElement {
   }
 
   _grid(profile, label, editable = false) {
-    const hours = this._draft[profile];
+    const hours = editable ? this._draft[profile] : blocksToHours(this._backendPlan(this._entities())[profile]);
     const nowHour = new Date().getHours();
     return html`
       <div class="gwrap ${editable ? "editable" : ""}">
@@ -907,6 +946,12 @@ class ClimadoCard extends LitElement {
       .system-controls { padding: 12px 0; border-top: 1px solid var(--divider-color); border-bottom: 1px solid var(--divider-color); }
       .system-label { font-size: 13px; font-weight: 600; margin: 0 0 6px; }
       .segments { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin-bottom: 12px; border: 1px solid var(--divider-color); border-radius: 6px; overflow: hidden; }
+      .electricity-plan { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-bottom: 14px; }
+      .rate-segments { grid-template-columns: repeat(2, minmax(0, 1fr)); width: 132px; flex: 0 0 132px; margin: 0; }
+      .rate-segments .segment { min-height: 38px; padding: 8px; }
+      .energy-price { display: flex; flex-direction: column; gap: 3px; margin-left: auto; text-align: right; }
+      .energy-price strong { font-size: 16px; }
+      .energy-price span { font-size: 12px; color: var(--secondary-text-color); }
       .segment { min-width: 0; min-height: 64px; border: 0; border-right: 1px solid var(--divider-color); border-radius: 0; padding: 8px 4px; background: var(--card-background-color, white); color: var(--primary-text-color); font: inherit; font-size: 13px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; cursor: pointer; }
       .segment:last-child { border-right: 0; }
       .segment ha-icon { --mdc-icon-size: 20px; width: 20px; height: 20px; }
@@ -1285,4 +1330,4 @@ window.customCards.push({
   documentation: "https://github.com/tvanbave/climado",
 });
 
-console.info("%c CLIMADO-CARD %c 0.4.0b6 ", "background:#1565c0;color:#fff", "");
+console.info("%c CLIMADO-CARD %c 0.4.0b7 ", "background:#1565c0;color:#fff", "");

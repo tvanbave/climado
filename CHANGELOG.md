@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.0b7 - Electricity Plan And Energy Price
+
+- Add a persisted ULO/TOU selector and current published CAD energy price/kWh
+  to the card, plus a standalone electricity energy price sensor.
+- Apply Ontario TOU summer/winter and weekend/holiday schedules, including exact
+  boundary refreshes and dated November 1, 2026 prices. Exclude delivery, tax and
+  rebates from the clearly labelled energy-only price.
+- Selecting TOU disables the provisional ULO fuel policy without changing HVAC
+  mode; ULO-specific heat-cost advice is suppressed. Plan changes are blocked
+  during a source handoff. Utility account billing is not changed.
+
 ## 0.4.0b6 - Provisional ULO Fuel Control
 
 - Add opt-in Automatic fuel selection: gas at or below 2 C and heat pump above

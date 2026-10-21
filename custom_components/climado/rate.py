@@ -17,7 +17,7 @@ A heating implementation later flips the sign.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, time
+from datetime import date, datetime, time
 
 
 @dataclass(frozen=True)
@@ -90,7 +90,7 @@ def rate_offset(plan: RatePlan, when: datetime, is_workday: bool) -> tuple[float
 KNOWN_TIERS = ("ultra_low", "off_peak", "mid_peak", "on_peak")
 _TIER_META = {
     "ultra_low": ("Ultra-low overnight", 0),
-    "off_peak": ("Off-peak (weekend/holiday)", 1),
+    "off_peak": ("Off-peak", 1),
     "mid_peak": ("Mid-peak", 2),
     "on_peak": ("On-peak", 3),
 }
@@ -181,3 +181,40 @@ def default_ulo_plan(onpeak_coast: float, precool_lead: int, precool_depth: floa
         [23, 24, "ultra_low"],
     ]
     return plan_from_schedule(weekday, weekend, onpeak_coast, precool_lead, precool_depth)
+
+
+def default_tou_plan(when, onpeak_coast=0, precool_lead=0, precool_depth=0):
+    """Ontario TOU: winter Nov-Apr, summer May-Oct; holidays use weekend."""
+    winter = when.month in (11, 12, 1, 2, 3, 4)
+    morning, daytime = ("on_peak", "mid_peak") if winter else ("mid_peak", "on_peak")
+    return plan_from_schedule(
+        [[0, 7, "off_peak"], [7, 11, morning], [11, 17, daytime],
+         [17, 19, morning], [19, 24, "off_peak"]],
+        [[0, 24, "off_peak"]], onpeak_coast, precool_lead, precool_depth,
+    )
+
+
+# Energy-only RPP rates in CAD/kWh. Expire rather than silently extending rates.
+# https://www.oeb.ca/consumer-information-and-protection/electricity-rates/historical-electricity-rates
+# https://www.oeb.ca/newsroom/2026/ontario-energy-board-announces-changes-electricity-prices-households-small-businesses
+ENERGY_RATES = (
+    (date(2025, 11, 1), date(2026, 11, 1), {
+        "ULO": dict(zip(KNOWN_TIERS, (0.039, 0.098, 0.157, 0.391))),
+        "TOU": {"off_peak": 0.098, "mid_peak": 0.157, "on_peak": 0.203},
+    }),
+    (date(2026, 11, 1), date(2027, 11, 1), {
+        "ULO": dict(zip(KNOWN_TIERS, (0.037, 0.091, 0.146, 0.377))),
+        "TOU": {"off_peak": 0.091, "mid_peak": 0.146, "on_peak": 0.189},
+    }),
+)
+
+
+def electricity_price(plan, tier, when):
+    """Return dated energy prices, without delivery, tax or rebate estimates."""
+    base = {"plan": plan, "tier_id": tier, "currency": "CAD", "basis": "energy_only",
+            "per_kwh": None, "status": "unavailable"}
+    for start, end, prices in ENERGY_RATES:
+        if start <= when.date() < end and tier in prices.get(plan, {}):
+            return {**base, "status": "ready", "per_kwh": prices[plan][tier],
+                    "valid_from": start.isoformat(), "valid_until": end.isoformat()}
+    return base
