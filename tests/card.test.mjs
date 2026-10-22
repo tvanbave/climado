@@ -91,6 +91,32 @@ test("external thermostat preset shows its target without claiming a manual chan
   assert.doesNotMatch(view, /Manual hold|Respecting your manual change/);
 });
 
+test("Heading home is selectable only from Away or Vacation", async () => {
+  const item = card({prearrival_active:false});
+  for (const [id, state] of [["button.climado_heading_home", "unknown"], ["switch.climado_climado_control", "on"]]) {
+    item.hass.states[id] = {state,attributes:{}};
+    item.hass.entities[id] = {device_id:"test"};
+  }
+  let calls = 0;
+  item.hass.callService = async()=>{calls++;};
+  for (const mode of ["home", "sleep", "manual_hold", "thermostat_preset", "pre_arrival", "inactive", "disabled", "unavailable"]) {
+    item.hass.states["sensor.climado_effective_mode"].state = mode;
+    assert.equal(item._canHeadHome(item._entities()),false,mode);
+    await item._headingHome(item._entities());
+  }
+  assert.equal(calls,0);
+  for (const mode of ["away", "vacation"]) {
+    item.hass.states["sensor.climado_effective_mode"].state = mode;
+    assert.equal(item._canHeadHome(item._entities()),true);
+    await item._headingHome(item._entities());
+  }
+  assert.equal(calls,2);
+  assert.match(item.render(), /class="action ghost"[^>]*aria-label="Heading home"/);
+  item.hass.states["sensor.climado_effective_mode"].attributes.prearrival_active = true;
+  assert.equal(item._canHeadHome(item._entities()),false);
+  assert.match(item.render(), /Heading home is active/);
+});
+
 test("confirmed thermostat state replaces the waiting indicator", () => {
   const item = card({ command_pending: false, regulating: "bedroom", hvac_action: "cooling" });
   item.hass.states["sensor.climado_resolved_target"].state = "23.1";

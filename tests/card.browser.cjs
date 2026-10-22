@@ -36,6 +36,7 @@ const assert = require('node:assert/strict');
           'switch.climado_windows_open':{state:'off',attributes:{}},
           'switch.climado_vacation':{state:'off',attributes:{}}
         };
+        states['button.climado_heading_home']={state:'unknown',attributes:{}};
         for(const [key,value] of Object.entries({heat_home:20,heat_away:17,heat_vacation:15,heat_prearrival:20})) states['number.climado_'+key]={state:String(value),attributes:{climado_key:key,min:10,max:28,step:.5}};
         const card=document.createElement('climado-card');
         card.setConfig({entity:'select.climado_mode'});
@@ -301,6 +302,26 @@ const assert = require('node:assert/strict');
       const overflow=await page.locator('.head,.mode,.reason,.temps').evaluateAll(nodes=>nodes.filter(n=>n.scrollWidth>n.clientWidth+1).map(n=>({class:n.className,width:n.clientWidth,scroll:n.scrollWidth})));
       assert.deepEqual(overflow,[]);
     }
+    await page.evaluate(()=>{window.calls=[];});
+    for(const mode of ['home','sleep','away','vacation','pre_arrival']) {
+      await page.evaluate(async(mode)=>{
+        const c=window.card;
+        c.hass={...c.hass,states:{...c.hass.states,'sensor.climado_effective_mode':{
+          state:mode,attributes:{...c.hass.states['sensor.climado_effective_mode'].attributes,
+            prearrival_active:mode==='pre_arrival',windows_open:false,windows_restoring:false,
+            system_control:{pending:null},auto_fuel:{enabled:false}}}}};
+        await c.updateComplete;
+      },mode);
+      const button=page.getByRole('button',{name:'Heading home',exact:true});
+      const allowed=['away','vacation'].includes(mode);
+      assert.equal(await button.isEnabled(),allowed,mode);
+      assert.equal(await button.evaluate(n=>n.classList.contains('ghost')),mode!=='pre_arrival');
+      if(allowed) await button.click();
+    }
+    assert.deepEqual(await page.evaluate(()=>window.calls),[
+      ['button','press',{entity_id:'button.climado_heading_home'}],
+      ['button','press',{entity_id:'button.climado_heading_home'}]
+    ]);
     assert.deepEqual(errors,[]);
     console.log('Targets, source draft, explicit Heat request, observed state and Windows guards passed; no page errors.');
   } finally { await browser.close(); }

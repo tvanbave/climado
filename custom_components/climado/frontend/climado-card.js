@@ -453,7 +453,7 @@ class ClimadoCard extends LitElement {
     const regulating = cleanValue(a("regulating"));
     const enableReady = this._available(e.enable);
     const vacationReady = this._available(e.vacation);
-    const prearrivalReady = this._callable(e.prearrival) && !["inactive", "disabled", "windows_open"].includes(eff);
+    const prearrivalReady = this._canHeadHome(e);
     const windowsReady = this._available(e.windows);
     const windowsOn = windowsReady && this._state(e.windows)?.state === "on";
     const autoWindows = a("auto_windows");
@@ -624,7 +624,9 @@ class ClimadoCard extends LitElement {
         ` : ""}
 
         <div class="row">
-          <button class="action" ?disabled=${!prearrivalReady} @click=${() => this._press(e.prearrival)}>
+          <button class="action ${a("prearrival_active") === true ? "" : "ghost"}" ?disabled=${!prearrivalReady}
+            aria-label="Heading home" title=${a("prearrival_active") === true ? "Heading home is active" : prearrivalReady ? "Start pre-arrival comfort" : "Available while Away or Vacation"}
+            @click=${() => this._headingHome(e)}>
             <ha-icon icon="mdi:home-clock"></ha-icon><span>Heading home</span>
           </button>
           <button class="action ghost" ?disabled=${!resumeReady || !canResume} @click=${() => this._press(e.resume)}>
@@ -670,6 +672,19 @@ class ClimadoCard extends LitElement {
     if (id && TIERS[id]) return id;
     const hit = Object.entries(TIERS).find(([, t]) => name && name.startsWith(t.name));
     return hit ? hit[0] : name;
+  }
+
+  _canHeadHome(e) {
+    const a = key => this._attr(e.effective_mode, key);
+    return this._callable(e.prearrival) && this._available(e.effective_mode)
+      && ["away", "vacation"].includes(this._state(e.effective_mode)?.state)
+      && this._available(e.enable) && this._state(e.enable).state === "on"
+      && !a("prearrival_active") && !a("windows_open") && !a("windows_restoring")
+      && !a("auto_fuel")?.phase && !a("system_control")?.pending;
+  }
+
+  async _headingHome(e) {
+    if (this._canHeadHome(e)) await this._press(e.prearrival);
   }
 
   _rateProfile(e) {
@@ -1370,4 +1385,4 @@ window.customCards.push({
   documentation: "https://github.com/tvanbave/climado",
 });
 
-console.info("%c CLIMADO-CARD %c 0.4.0b9 ", "background:#1565c0;color:#fff", "");
+console.info("%c CLIMADO-CARD %c 0.4.0b10 ", "background:#1565c0;color:#fff", "");

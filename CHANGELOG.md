@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.0b10 - Heading Home Availability
+
+- Enable Heading home only in Away or Vacation, including automatic Away.
+- Use a neutral button until pre-arrival is active; prevent repeat activation.
+- Heading home clears manual Away/Vacation and the Vacation switch before
+  applying the seasonal pre-arrival target. Return to Auto afterward; arrival
+  ends pre-arrival early. Existing service-based pre-arrival calls are unchanged.
+
 ## 0.4.0b9 - Feedback Refresh And Thermostat Presets
 
 - Run the feedback refresh timer on Home Assistant's event loop, not an executor

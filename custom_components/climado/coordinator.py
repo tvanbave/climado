@@ -479,6 +479,22 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         )
 
     # ---- pre-arrival API ----
+    async def async_heading_home(self) -> bool:
+        """Return from an away hold and begin explicit pre-arrival comfort."""
+        async with self._evaluation_lock:
+            mode = (self.data or {}).get("mode")
+            if (mode not in (MODE_AWAY, MODE_VACATION)
+                    or self.manual_mode not in (MODE_AUTO, MODE_AWAY, MODE_VACATION)
+                    or self.system.pending or self.auto_fuel.phase or self._prearrival_active()):
+                return False
+            if not self.start_prearrival(force=True):
+                return False
+            self.vacation = False
+            self.set_manual_mode(MODE_AUTO)
+            self.clear_manual_hold()
+        await self.async_request_refresh()
+        return True
+
     def start_prearrival(self, lead_minutes=None, target=None, only_if_above=None, force=False, only_if_below=None) -> bool:
         self._sync_hvac_context()
         if self.windows.busy or not self.enabled or self._control_blocked():
