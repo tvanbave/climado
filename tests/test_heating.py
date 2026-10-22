@@ -50,6 +50,70 @@ async def test_heat_sleep_and_morning_expiry(engine):
     assert engine.c.manual_mode == "auto"
 
 
+async def test_ecobee_morning_preset_is_not_claimed_as_manual(engine):
+    e = engine
+    e.entry.options["heating_enabled"] = True
+    e.clock.set("2026-10-22T06:00:00")
+    heat(e, preset_mode="sleep", temperature=18.5, climate_mode="Sleep")
+    assert (await e.c._async_update_data())["mode"] == "sleep"
+    e.clock.set("2026-10-22T06:10:00")
+    heat(e, temperature=21)  # Editing Sleep's comfort target keeps its preset.
+    data = await e.c._async_update_data()
+    assert data["mode"] == "sleep"
+    assert data["target"] == 21
+    e.clock.set("2026-10-22T06:33:00")
+    heat(e, preset_mode="home", climate_mode="Home")
+    data = await e.c._async_update_data()
+    assert data["mode"] == "thermostat_preset"
+    assert data["reason"] == "thermostat_preset"
+    assert data["target"] == 21
+    assert data["applied"] is None
+    assert data["manual_hold_value"] == ["preset", "home"]
+    e.clock.set("2026-10-22T06:50:00")
+    assert (await e.c._async_update_data())["mode"] == "thermostat_preset"
+    e.service.assert_not_called()
+    e.clock.set("2026-10-22T07:00:00")
+    data = await e.c._async_update_data()
+    assert data["mode"] == "home"
+    assert not data["manual_hold_active"]
+    e.service.assert_awaited_once()
+    assert e.service.call_args.args[1] == "set_temperature"
+
+
+@pytest.mark.parametrize("target", [None, "unavailable", float("nan"), float("inf")])
+async def test_external_preset_invalid_target_is_not_invented(engine, target):
+    e = engine
+    e.entry.options["heating_enabled"] = True
+    e.clock.set("2026-10-22T06:00:00")
+    heat(e, preset_mode="sleep", temperature=21)
+    await e.c._async_update_data()
+    e.clock.set("2026-10-22T06:33:00")
+    heat(e, preset_mode="home", temperature=target)
+    data = await e.c._async_update_data()
+    assert data["mode"] == "thermostat_preset"
+    assert data["target"] is None
+    e.service.assert_not_called()
+
+
+async def test_temperature_adjustment_during_external_preset_is_manual(engine):
+    e = engine
+    e.entry.options["heating_enabled"] = True
+    e.clock.set("2026-10-22T06:00:00")
+    heat(e, preset_mode="sleep", temperature=21)
+    await e.c._async_update_data()
+    e.clock.set("2026-10-22T06:33:00")
+    heat(e, preset_mode="home")
+    await e.c._async_update_data()
+    heat(e, preset_mode="temp", temperature=22)
+    data = await e.c._async_update_data()
+    assert data["mode"] == "manual_hold"
+    assert data["target"] == 22
+    e.service.assert_not_called()
+    e.c.clear_manual_hold()
+    assert (await e.c._async_update_data())["mode"] == "sleep"
+    assert e.service.call_args.args[1] == "set_preset_mode"
+
+
 @pytest.mark.asyncio
 async def test_heating_has_no_cooling_rate_offsets(engine):
     engine.entry.options["heating_enabled"] = True

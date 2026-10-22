@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.0b9 - Feedback Refresh And Thermostat Presets
+
+- Run the feedback refresh timer on Home Assistant's event loop, not an executor
+  thread; prevent duplicate in-flight refresh tasks.
+- Label external comfort presets as thermostat presets rather than manual
+  adjustments. Ecobee's climate entity does not identify whether a preset came
+  from its schedule or a user selecting that same preset.
+- Show the thermostat's reported preset target and respect it until the next
+  Climado night/day boundary. Preserve manual temperature holds, Resume and
+  explicit Climado overrides. No Ecobee schedule or fuel-policy changes.
+
 ## 0.4.0b8 - Automatic Fuel Status
 
 - Show the selected heat pump or gas furnace prominently below Automatic,

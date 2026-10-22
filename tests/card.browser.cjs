@@ -277,6 +277,30 @@ const assert = require('node:assert/strict');
       assert(boxes.every(b=>b.left>=0 && b.right<=width && !b.overflow),JSON.stringify(boxes));
       await page.screenshot({path:path.join(os.tmpdir(),'climado-electricity-plan-'+width+'.png'),fullPage:true});
     }
+    await page.evaluate(async()=>{
+      const c=window.card;
+      c.hass={...c.hass,entities:{...c.hass.entities,'sensor.climado_resolved_target':{device_id:'test'}},states:{...c.hass.states,
+        'sensor.climado_effective_mode':{state:'thermostat_preset',attributes:{
+          ...c.hass.states['sensor.climado_effective_mode'].attributes,
+          manual_hold_active:true,manual_hold_value:['preset','home'],manual_hold_until:'2026-10-22T11:00:00Z',
+          command_pending:false,regulating:'main'}},
+        'sensor.climado_control_reason':{state:'thermostat_preset',attributes:{}},
+        'sensor.climado_resolved_target':{state:'21',attributes:{}}}};
+      await c.updateComplete;
+    });
+    await page.getByText('Thermostat Home',{exact:true}).waitFor();
+    assert.equal(await page.locator('.target').textContent(),'21°');
+    assert.equal(await page.locator('.tlabel').textContent(),'Thermostat target');
+    for(const width of [320,390,1100]) {
+      await page.setViewportSize({width,height:1100});
+      await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+      const title=await page.locator('.mode').boundingBox();
+      const target=await page.locator('.temps').boundingBox();
+      assert(title.x+title.width<=target.x,'Thermostat preset title overlaps target');
+      await page.screenshot({path:path.join(os.tmpdir(),'climado-thermostat-preset-'+width+'.png'),fullPage:true});
+      const overflow=await page.locator('.head,.mode,.reason,.temps').evaluateAll(nodes=>nodes.filter(n=>n.scrollWidth>n.clientWidth+1).map(n=>({class:n.className,width:n.clientWidth,scroll:n.scrollWidth})));
+      assert.deepEqual(overflow,[]);
+    }
     assert.deepEqual(errors,[]);
     console.log('Targets, source draft, explicit Heat request, observed state and Windows guards passed; no page errors.');
   } finally { await browser.close(); }

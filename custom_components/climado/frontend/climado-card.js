@@ -479,10 +479,10 @@ class ClimadoCard extends LitElement {
       && feedback.hvac_mode === restoration.mode ? numericValue(feedback.target) : null;
     const showLocalTarget = !unavailable && holdTemp == null && target == null && localRestoreTarget != null;
     const bigTemp = holdTemp != null ? holdTemp : target ?? (showLocalTarget ? localRestoreTarget : null);
-    const bigLabel = holdTemp != null ? "Hold" : regulating === "bedroom" ? "Bedroom target" : "Target";
+    const bigLabel = holdTemp != null ? "Hold" : eff === "thermostat_preset" ? "Thermostat target" : regulating === "bedroom" ? "Bedroom target" : "Target";
     const restoreTitle = restoration?.phase === "pausing" ? "Finishing pause"
       : ({heat: "Restoring heating", cool: "Restoring cooling", off: "Restoring Off"})[restoration?.mode] || "Restoring thermostat";
-    const title = unavailable ? "Unavailable" : restoring ? restoreTitle : reason === "fuel_transition" ? "Changing source" : reason === "thermostat_off" ? "System off" : reason === "system_mode_pending" ? "Waiting" : this._humanMode(eff);
+    const title = unavailable ? "Unavailable" : restoring ? restoreTitle : reason === "fuel_transition" ? "Changing source" : reason === "thermostat_off" ? "System off" : reason === "system_mode_pending" ? "Waiting" : eff === "thermostat_preset" && holdVal?.[0] === "preset" ? `Thermostat ${this._humanMode(holdVal[1])}` : this._humanMode(eff);
     const subtitle = unavailable
       ? "Waiting for Climado to report its state"
       : this._humanReason(reason, heating);
@@ -573,7 +573,7 @@ class ClimadoCard extends LitElement {
             ? html`<span class="chip pre">${heating ? "preheat" : "pre-cool"} → ${this._fmt(preUntil)}</span>`
             : ""}
           ${holdUntil
-            ? html`<span class="chip hold">hold → ${this._fmt(holdUntil)}</span>`
+            ? html`<span class="chip hold">${eff === "thermostat_preset" ? "Thermostat until" : "hold →"} ${this._fmt(holdUntil)}</span>`
             : ""}
         </div>
 
@@ -696,6 +696,7 @@ class ClimadoCard extends LitElement {
       {
         pre_arrival: "Heading home",
         manual_hold: "Manual hold",
+        thermostat_preset: "Thermostat preset",
         sleep: "Sleep",
         away: "Away",
         home: "Home",
@@ -896,6 +897,7 @@ class ClimadoCard extends LitElement {
       unsupported_hvac_mode: "Thermostat mode unavailable or unsupported",
       unsupported_temperature_unit: "Heating requires Celsius thermostat units",
       manual_hold: "Respecting your manual change",
+      thermostat_preset: "Following thermostat preset until the next Climado transition",
       manual_sleep: "Sleep (manual)",
       "night/ecobee-sleep": heating ? "Overnight bedroom comfort" : "Overnight — cooling the bedroom",
       "night/fallback": "Overnight",
@@ -1026,7 +1028,9 @@ class ClimadoCard extends LitElement {
         font-weight: 600;
         text-transform: capitalize;
         line-height: 1.15;
+        overflow-wrap: anywhere;
       }
+      .head > div:first-child { min-width: 0; flex: 1; }
       .reason {
         color: var(--secondary-text-color);
         font-size: 0.85em;
@@ -1044,7 +1048,8 @@ class ClimadoCard extends LitElement {
       }
       .temps {
         text-align: right;
-        min-width: 76px;
+        flex: 0 0 100px;
+        min-width: 0;
       }
       .target {
         font-size: 1.9em;
@@ -1055,7 +1060,8 @@ class ClimadoCard extends LitElement {
         color: var(--secondary-text-color);
         font-size: 0.75em;
         text-transform: uppercase;
-        letter-spacing: 0.04em;
+        letter-spacing: 0;
+        overflow-wrap: anywhere;
       }
       .reason {
         display: flex;
@@ -1364,4 +1370,4 @@ window.customCards.push({
   documentation: "https://github.com/tvanbave/climado",
 });
 
-console.info("%c CLIMADO-CARD %c 0.4.0b8 ", "background:#1565c0;color:#fff", "");
+console.info("%c CLIMADO-CARD %c 0.4.0b9 ", "background:#1565c0;color:#fff", "");

@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from homeassistant.core import HassJob, HassJobType
 from homeassistant.exceptions import ServiceValidationError
 
 from custom_components.climado.config_flow import ClimadoOptionsFlow
@@ -215,6 +216,34 @@ async def test_unload_cancels_inflight_refresh(engine):
     await e.c.feedback.async_close()
     assert task.done()
     e.c.async_request_refresh.assert_not_called()
+
+
+async def test_timer_dispatch_runs_refresh_on_event_loop_once(engine):
+    e = engine
+    setup(e)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    e.c.async_request_refresh = AsyncMock()
+
+    async def read(*args, **kwargs):
+        assert asyncio.get_running_loop() is e.hass.loop
+        entered.set()
+        await release.wait()
+
+    e.service.side_effect = read
+    job = HassJob(e.c.feedback._start)
+    # Real HA dispatch sends undecorated synchronous functions to an executor.
+    assert job.job_type is HassJobType.Callback
+    e.hass.async_run_hass_job(job, e.clock.utcnow())
+    await asyncio.wait_for(entered.wait(), timeout=1)
+    first = e.c.feedback._task
+    e.hass.async_run_hass_job(job, e.clock.utcnow())
+    assert e.c.feedback._task is first
+    release.set()
+    await first
+    assert e.c.feedback._task is None
+    assert e.service.await_count == 1
+    e.c.async_request_refresh.assert_awaited_once()
 
 
 async def test_unload_cancels_coordinator_refresh_tail(engine):

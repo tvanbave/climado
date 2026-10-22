@@ -96,6 +96,7 @@ from .const import (
     MODE_DISABLED,
     MODE_HOME,
     MODE_MANUAL_HOLD,
+    MODE_THERMOSTAT_PRESET,
     MODE_PREARRIVAL,
     MODE_SLEEP,
     MODE_VACATION,
@@ -943,8 +944,10 @@ class ClimadoCoordinator(DataUpdateCoordinator):
             MODE_HOME, MODE_AWAY, MODE_SLEEP, MODE_VACATION
         ) else None
 
-        # Manual-hold respect (auto mode only): a hand adjustment on the
-        # thermostat is honored until the next night-window transition, like
+        # External thermostat changes (auto mode only) are honored until the
+        # next night-window transition. Ecobee exposes scheduled presets and
+        # user-selected presets identically; do not claim they are manual.
+        # Temperature holds retain manual-hold semantics, like
         # ecobee's "hold until next transition". Explicit select choices,
         # Resume, vacation/away/pre-arrival all supersede it.
         actual = self._thermostat_actual()
@@ -965,12 +968,12 @@ class ClimadoCoordinator(DataUpdateCoordinator):
                 self._manual_hold = actual
                 self._manual_hold_until = self._next_boundary(now, night_start, night_end)
                 _LOGGER.info(
-                    "Climado: manual adjustment detected (%s); respecting until %s",
+                    "Climado: external thermostat change detected (%s); respecting until %s",
                     actual,
                     self._manual_hold_until,
                 )
             elif self._manual_hold_until is not None and actual is not None:
-                self._manual_hold = actual  # user re-adjusted during the hold
+                self._manual_hold = actual  # Thermostat changed again during the hold.
 
         tier = plan.tier_at(now, is_workday)
 
@@ -989,8 +992,11 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         ):
             mode, action, reason = MODE_AWAY, ("temp", away_temp), "away"
         elif forced is None and self._manual_hold_until is not None:
-            # Respect the hand adjustment: no writes until the next transition.
-            mode, action, reason = MODE_MANUAL_HOLD, ("none", None), "manual_hold"
+            # Respect native presets as well as temperature holds, without
+            # fighting a thermostat schedule that ends Sleep before ours.
+            preset = self._manual_hold and self._manual_hold[0] == "preset"
+            mode = MODE_THERMOSTAT_PRESET if preset else MODE_MANUAL_HOLD
+            action, reason = ("none", None), mode
         elif forced == MODE_SLEEP or (is_night and forced != MODE_HOME):
             # Hand control to the ecobee's native Sleep comfort (Bedroom sensor):
             # a true closed loop on the bedroom that reaches target and cycles off,
@@ -1006,8 +1012,14 @@ class ClimadoCoordinator(DataUpdateCoordinator):
             applied = await self._apply_preset(action[1])
             target = applied
         elif action[0] == "none":
-            # Manual hold: report the user's value, write nothing.
+            # Report the observed target, but do not issue another command.
             target = self._manual_hold[1] if self._manual_hold and self._manual_hold[0] == "temp" else None
+            if mode == MODE_THERMOSTAT_PRESET:
+                try:
+                    reported = float(self._climate_attr("temperature"))
+                    target = reported if math.isfinite(reported) else None
+                except (TypeError, ValueError):
+                    target = None
             applied = None
         else:
             target = action[1]
@@ -1029,7 +1041,9 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         state["thermostat_updated_at"] = climate.last_reported.isoformat() if climate else None
         # Which sensor the thermostat is regulating right now (bedroom during the
         # ecobee Sleep handoff, else the main-floor thermostat sensor).
-        state["regulating"] = "bedroom" if mode == MODE_SLEEP else "main"
+        state["regulating"] = "bedroom" if mode == MODE_SLEEP or (
+            mode == MODE_THERMOSTAT_PRESET and self._manual_hold == ("preset", "sleep")
+        ) else "main"
         state["next_transition"] = self._next_transition(
             now, night_start, night_end, is_night, plan, is_workday
         )

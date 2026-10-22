@@ -4,6 +4,7 @@ import logging
 import math
 from datetime import timedelta
 
+from homeassistant.core import callback
 from homeassistant.helpers.event import async_track_point_in_time
 from homeassistant.util import dt as dt_util
 
@@ -104,9 +105,10 @@ class ThermostatFeedback:
             return
         self._unsub = async_track_point_in_time(self.c.hass, self._start, due)
 
+    @callback
     def _start(self, _now):
         self._unsub = None
-        if self._closed:
+        if self._closed or self._task is not None:
             return
         self._task = self.c.hass.async_create_background_task(self._refresh(), "Climado feedback refresh")
 

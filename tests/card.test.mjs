@@ -77,6 +77,20 @@ test("failed command shows retry status", () => {
   assert.doesNotMatch(view, /Waiting for thermostat confirmation/);
 });
 
+test("external thermostat preset shows its target without claiming a manual change", () => {
+  const item = card({manual_hold_active:true,manual_hold_value:["preset","home"],
+    manual_hold_until:"2026-10-22T11:00:00Z"});
+  item.hass.states["sensor.climado_effective_mode"].state = "thermostat_preset";
+  item.hass.states["sensor.climado_control_reason"].state = "thermostat_preset";
+  item.hass.states["sensor.climado_resolved_target"].state = "21";
+  const view = item.render();
+  assert.match(view, /Thermostat Home/);
+  assert.match(view, /Thermostat target/);
+  assert.match(view, /Following thermostat preset/);
+  assert.match(view, /class="target">21°/);
+  assert.doesNotMatch(view, /Manual hold|Respecting your manual change/);
+});
+
 test("confirmed thermostat state replaces the waiting indicator", () => {
   const item = card({ command_pending: false, regulating: "bedroom", hvac_action: "cooling" });
   item.hass.states["sensor.climado_resolved_target"].state = "23.1";

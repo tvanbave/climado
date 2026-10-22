@@ -4,7 +4,7 @@ from __future__ import annotations
 from homeassistant.const import Platform
 
 DOMAIN = "climado"
-VERSION = "0.4.0b8"
+VERSION = "0.4.0b9"
 
 PLATFORMS = [
     Platform.SELECT,
@@ -97,6 +97,7 @@ MODE_SLEEP = "sleep"
 MODE_VACATION = "vacation"
 MODE_PREARRIVAL = "pre_arrival"
 MODE_MANUAL_HOLD = "manual_hold"
+MODE_THERMOSTAT_PRESET = "thermostat_preset"
 MODE_DISABLED = "disabled"
 
 # Options offered by the manual-override select
