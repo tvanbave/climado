@@ -96,6 +96,16 @@ set_rate_plan:
       selector:
         object:
 
+recover_fuel_automation:
+  name: Acknowledge and restore Automatic
+  description: Clear a retained fuel-control failure after validating fresh Heat mode, fuel and outdoor reports. Adopt the current heating source and restart the 30-minute minimum source timer without issuing an HVAC command.
+  fields:
+    entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: climado
+
 set_fuel_automation:
   name: Set automatic fuel selection
   description: Enable or disable provisional ULO fuel control. Requires confirmed Heat mode and a configured outdoor temperature sensor. Gas at or below 2 C; heat pump above 4 C overnight; gas during other tiers.

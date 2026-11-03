@@ -318,6 +318,21 @@ class ClimadoCard extends LitElement {
     }
   }
 
+  async _recoverFuelAutomation(e) {
+    const system = this._systemState(e);
+    if (!system?.entry_id || this._systemBusy || !this.hass.services?.climado?.recover_fuel_automation
+      || !this._attr(e.effective_mode, "auto_fuel")?.recovery_ready) return;
+    this._systemBusy = true;
+    this._systemError = null;
+    try {
+      await this.hass.callService("climado", "recover_fuel_automation", {entry_id: system.entry_id});
+    } catch (err) {
+      this._systemError = err?.message || "Automatic could not be restored";
+    } finally {
+      this._systemBusy = false;
+    }
+  }
+
   async _setSystemMode(e, mode) {
     const system = this._systemState(e);
     if (!this._canSetSystem(system, mode)) return;
@@ -733,6 +748,7 @@ class ClimadoCard extends LitElement {
       ? null : heating ? system.heat_source : this._heatSource;
     const autoReady = !!this.hass.services?.climado?.set_fuel_automation && !this._systemBusy
       && (automatic?.enabled || (this._attr(e.effective_mode, "electricity_plan") !== "TOU" && heating && !system.pending && system.source_available
+        && !system.error && !automatic?.error
         && !this._attr(e.effective_mode, "windows_open") && !this._attr(e.effective_mode, "windows_restoring")));
     const sourceReady = this._canChooseHeatSource(system);
     const error = this._systemError || system.error;
@@ -764,6 +780,14 @@ class ClimadoCard extends LitElement {
       ${this._renderAutomaticSource(e, system, automatic, feedback)}
       ${!system.source_available ? html`<div class="control-note">Heating source unavailable</div>` : ""}
       ${automatic?.enabled || automatic?.error ? html`<div class="control-note" role="status">${automatic.reason}${automatic.enabled && automatic.outdoor_c !== null ? ` · Outside ${this._temp(automatic.outdoor_c)}` : ""}</div>` : ""}
+      ${!automatic?.enabled && (automatic?.error || system.error) && this.hass.services?.climado?.recover_fuel_automation ? html`
+        <button class="action ghost recover-fuel" ?disabled=${this._systemBusy || !automatic?.recovery_ready}
+          title=${automatic?.recovery_blocked_reason || "Validate current reports and restore Automatic"}
+          @click=${() => this._recoverFuelAutomation(e)}>
+          <ha-icon icon="mdi:check-circle-outline"></ha-icon><span>Acknowledge and restore Automatic</span>
+        </button>
+        ${automatic?.recovery_blocked_reason ? html`<div class="control-note">${automatic.recovery_blocked_reason}</div>` : ""}
+      ` : ""}
       ${status ? html`<div class="control-note" role="status">${status}</div>` : ""}
       ${feedback ? html`<div class="feedback-note">${this._feedbackNote(feedback)}</div>` : ""}
       ${feedback?.mode_disagreement ? html`<div class="control-note">Local and cloud modes differ; comfort commands paused</div>` : ""}
@@ -996,6 +1020,8 @@ class ClimadoCard extends LitElement {
       .automatic-source > div { display: flex; flex-direction: column; gap: 4px; min-width: 0; overflow-wrap: anywhere; }
       .automatic-source strong { font-size: 14px; }
       .automatic-source span { font-size: 12px; color: var(--secondary-text-color); }
+      .recover-fuel { width: 100%; box-sizing: border-box; margin-top: 8px; }
+      .recover-fuel span { min-width: 0; overflow-wrap: anywhere; }
       .segments { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin-bottom: 12px; border: 1px solid var(--divider-color); border-radius: 6px; overflow: hidden; }
       .electricity-plan { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-bottom: 14px; }
       .rate-segments { grid-template-columns: repeat(2, minmax(0, 1fr)); width: 132px; flex: 0 0 132px; margin: 0; }
@@ -1385,4 +1411,4 @@ window.customCards.push({
   documentation: "https://github.com/tvanbave/climado",
 });
 
-console.info("%c CLIMADO-CARD %c 0.4.0b10 ", "background:#1565c0;color:#fff", "");
+console.info("%c CLIMADO-CARD %c 0.4.0b11 ", "background:#1565c0;color:#fff", "");

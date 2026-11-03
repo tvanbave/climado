@@ -61,10 +61,42 @@ class AutoFuel:
             await self.save()
 
     def snapshot(self):
+        recovery_reason = self.recovery_blocked_reason() if not self.enabled and (self.error or self.c.system.error) else None
         return {"enabled": self.enabled, "phase": self.phase, "target": self.target,
                 "reason": self.error or self.reason, "error": self.error,
                 "outdoor_c": self.outdoor, "gas_at_c": 2, "heat_pump_above_c": 4,
-                "minimum_dwell_minutes": 30, "off_minutes": 5}
+                "minimum_dwell_minutes": 30, "off_minutes": 5,
+                "recovery_ready": not self.enabled and bool(self.error or self.c.system.error) and recovery_reason is None,
+                "recovery_blocked_reason": recovery_reason}
+
+    def recovery_blocked_reason(self):
+        if self.enabled or not (self.error or self.c.system.error):
+            return "No automatic fuel failure needs acknowledgement"
+        if self.phase or self.c.system.pending:
+            return "Wait for the current thermostat request to finish"
+        if reason := self._ready():
+            return reason
+        if self.c._hvac_mode() != "heat":
+            return "Confirm Heat mode and the current fuel before restoring Automatic"
+        return None
+
+    async def recover(self):
+        """Acknowledge a retained failure using current observations, with no HVAC command."""
+        if reason := self.recovery_blocked_reason():
+            if reason == "Waiting for fresh Ecobee mode and fuel reports":
+                self.c.feedback.request_refresh()
+            raise ServiceValidationError(reason)
+        system = self.c.system
+        previous = system.error, system.last_request
+        system.error, system.last_request = None, None
+        try:
+            await system.async_save()
+        except Exception:
+            system.error, system.last_request = previous
+            raise
+        # This revalidates observations after the save and starts a new dwell.
+        # If saving activation fails, set_enabled restores the disabled state.
+        await self.set_enabled(True)
 
     def _ready(self):
         c = self.c
@@ -81,6 +113,7 @@ class AutoFuel:
         for entity in (c.windows.climate_entity, c._aux_entity):
             state = c.hass.states.get(entity) if entity else None
             if (not state or state.state in ("unknown", "unavailable")
+                    or (entity == c._aux_entity and state.state not in ("on", "off"))
                     or not timedelta(0) <= dt_util.utcnow() - state.last_reported < timedelta(minutes=10)):
                 return "Waiting for fresh Ecobee mode and fuel reports"
         outdoor = temperature_reading(c.hass, c.opt(CONF_OUTDOOR_TEMP_SENSOR))
@@ -126,6 +159,9 @@ class AutoFuel:
     async def step(self, tier):
         """Return true while owning an Off-to-Heat handoff, blocking comfort writes."""
         if not self.enabled:
+            if ((self.error or self.c.system.error)
+                    and self.recovery_blocked_reason() == "Waiting for fresh Ecobee mode and fuel reports"):
+                self.c.feedback.request_refresh()
             return False
         c, now = self.c, dt_util.utcnow()
         if c.opt(CONF_ELECTRICITY_PLAN, "ULO") != "ULO":

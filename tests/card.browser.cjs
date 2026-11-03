@@ -322,6 +322,27 @@ const assert = require('node:assert/strict');
       ['button','press',{entity_id:'button.climado_heading_home'}],
       ['button','press',{entity_id:'button.climado_heading_home'}]
     ]);
+    await page.evaluate(async()=>{
+      const c=window.card;
+      c.hass={...c.hass,services:{climado:{...c.hass.services.climado,recover_fuel_automation:{}}}};
+      window.calls=[];
+      await window.report({auto_fuel:{enabled:false,error:'Previous request timed out',reason:'Previous request timed out',recovery_ready:true},
+        system_control:{entry_id:'test',hvac_mode:'heat',cloud_hvac_mode:'heat',heat_source:'gas',source_available:true,error:'Previous request timed out',pending:null}});
+    });
+    const recover=page.getByRole('button',{name:'Acknowledge and restore Automatic',exact:true});
+    await recover.click();
+    assert.deepEqual(await page.evaluate(()=>window.calls),[['climado','recover_fuel_automation',{entry_id:'test'}]]);
+    for(const width of [320,390,1100]) {
+      await page.setViewportSize({width,height:1100});
+      await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+      const bounds=await page.locator('.recover-fuel').evaluate(n=>{
+        const r=n.getBoundingClientRect();return {left:r.left,right:r.right,overflow:n.scrollWidth>n.clientWidth+1};
+      });
+      assert(bounds.left>=0 && bounds.right<=width && !bounds.overflow,JSON.stringify(bounds));
+      await page.screenshot({path:path.join(os.tmpdir(),'climado-recover-automatic-'+width+'.png'),fullPage:true});
+    }
+    await page.evaluate(()=>window.report({auto_fuel:{enabled:false,error:'Previous request timed out',recovery_ready:false,recovery_blocked_reason:'Waiting for fresh local feedback'}}));
+    assert.equal(await recover.isDisabled(),true);
     assert.deepEqual(errors,[]);
     console.log('Targets, source draft, explicit Heat request, observed state and Windows guards passed; no page errors.');
   } finally { await browser.close(); }

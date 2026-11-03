@@ -289,3 +289,121 @@ async def test_stale_aux_requests_bounded_read_refresh_without_hvac_command(engi
     assert not await e.c.auto_fuel.step("ultra_low")
     e.c.feedback.request_refresh.assert_called_once()
     e.service.assert_not_called()
+
+
+async def failed_controller(e, source="gas"):
+    e.clock.set("2026-11-03T12:00:00")
+    e.service.side_effect = None
+    report(e, source)
+    e.entry.options["local_feedback_entity"] = "climate.local"
+    e.hass.states.async_set("climate.local", "heat", {"hvac_action":"idle"}, timestamp=e.clock.utcnow().timestamp())
+    e.c.system.error = "Thermostat did not confirm the requested mode; no automatic retry"
+    e.c.auto_fuel.error = "Thermostat command failed; check thermostat before re-enabling Automatic"
+    await e.c.system.async_save()
+    await e.c.auto_fuel.save()
+
+
+@pytest.mark.parametrize("source", ["gas", "heat_pump"])
+async def test_acknowledgement_adopts_current_source_persists_and_restarts_dwell(engine, source):
+    e = engine
+    await failed_controller(e, source)
+    assert e.c.auto_fuel.snapshot()["recovery_ready"]
+    await e.c.async_recover_fuel_automation()
+    assert e.c.system.error is None
+    assert e.c.auto_fuel.error is None
+    assert e.c.auto_fuel.enabled
+    assert e.c.auto_fuel.expected == source
+    assert e.c.auto_fuel.changed == e.clock.utcnow()
+    assert not await e.c.auto_fuel.step("ultra_low" if source == "gas" else "mid_peak")
+    e.service.assert_not_called()
+    fresh = ClimadoCoordinator(e.hass, e.entry)
+    try:
+        await fresh.async_restore_runtime()
+        assert fresh.system.error is None
+        assert fresh.auto_fuel.enabled
+        assert fresh.auto_fuel.error is None
+        assert fresh.auto_fuel.expected == source
+    finally:
+        await fresh.async_unload()
+
+
+@pytest.mark.parametrize("fault", ["stale_cloud", "stale_aux", "missing_aux", "invalid_aux", "missing_local",
+                                    "stale_local", "mismatch", "off", "cool", "windows", "disabled",
+                                    "heating_disabled", "pending", "handoff", "outdoor", "tou"])
+async def test_acknowledgement_does_not_clear_fault_without_valid_reports(engine, fault):
+    e = engine
+    await failed_controller(e)
+    now = e.clock.utcnow().timestamp()
+    if fault in ("stale_cloud", "stale_aux", "stale_local"):
+        entity = {"stale_cloud":"climate.test", "stale_aux":"switch.ecobee_aux", "stale_local":"climate.local"}[fault]
+        state = e.hass.states.get(entity)
+        e.hass.states.async_set(entity, state.state, state.attributes, timestamp=now-601)
+    elif fault in ("missing_aux", "missing_local"):
+        e.hass.states.async_remove("switch.ecobee_aux" if fault == "missing_aux" else "climate.local")
+    elif fault == "invalid_aux":
+        e.hass.states.async_set("switch.ecobee_aux", "invalid", timestamp=now)
+    elif fault == "mismatch":
+        e.hass.states.async_set("climate.local", "off", timestamp=now)
+    elif fault in ("off", "cool"):
+        report(e, mode=fault)
+        e.hass.states.async_set("climate.local", fault, timestamp=now)
+    elif fault == "windows":
+        e.c.windows.manual = True
+    elif fault == "disabled":
+        e.c.enabled = False
+    elif fault == "heating_disabled":
+        e.entry.options["heating_enabled"] = False
+    elif fault == "pending":
+        e.c.system.pending = {"mode":"off"}
+    elif fault == "handoff":
+        e.c.auto_fuel.phase = "stopping"
+    elif fault == "outdoor":
+        e.hass.states.async_remove("sensor.outdoor")
+    elif fault == "tou":
+        e.entry.options["electricity_plan"] = "TOU"
+    assert not e.c.auto_fuel.snapshot()["recovery_ready"]
+    with pytest.raises(ServiceValidationError):
+        await e.c.auto_fuel.recover()
+    assert e.c.system.error
+    assert e.c.auto_fuel.error
+    assert not e.c.auto_fuel.enabled
+    e.c.system.pending = None
+    e.c.auto_fuel.phase = None
+    e.service.assert_not_called()
+
+
+@pytest.mark.parametrize("store", ["system", "auto_fuel"])
+async def test_acknowledgement_storage_failure_keeps_automatic_disabled(engine, monkeypatch, store):
+    e = engine
+    await failed_controller(e)
+    with monkeypatch.context() as patch:
+        patch.setattr(getattr(e.c, store)._store, "async_save", AsyncMock(side_effect=OSError("disk full")))
+        with pytest.raises(OSError):
+            await e.c.auto_fuel.recover()
+    assert not e.c.auto_fuel.enabled
+    assert e.c.auto_fuel.error
+    assert (await e.c.auto_fuel._store.async_load())["enabled"] is False
+    e.service.assert_not_called()
+
+
+async def test_recovery_service_is_explicit_and_scoped(engine):
+    e = engine
+    e.c.async_recover_fuel_automation = AsyncMock()
+    other = AsyncMock()
+    e.hass.data["climado"] = {"test":e.c,"other":other}
+    _register_services(e.hass)
+    await e.real_call(e.hass.services, "climado", "recover_fuel_automation", {"entry_id":"test"}, blocking=True)
+    e.c.async_recover_fuel_automation.assert_awaited_once()
+    other.async_recover_fuel_automation.assert_not_called()
+
+
+async def test_disabled_fault_refreshes_old_reports_without_acknowledging_or_commanding(engine):
+    e = engine
+    await failed_controller(e)
+    e.hass.states.async_set("switch.ecobee_aux", "on", timestamp=e.clock.utcnow().timestamp()-601)
+    e.c.feedback.request_refresh = Mock()
+    assert not await e.c.auto_fuel.step("mid_peak")
+    e.c.feedback.request_refresh.assert_called_once()
+    assert not e.c.auto_fuel.enabled
+    assert e.c.system.error
+    e.service.assert_not_called()

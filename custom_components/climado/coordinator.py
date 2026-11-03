@@ -806,6 +806,13 @@ class ClimadoCoordinator(DataUpdateCoordinator):
             await self.auto_fuel.set_enabled(enabled)
         await self.async_refresh()
 
+    async def async_recover_fuel_automation(self):
+        try:
+            async with self._evaluation_lock:
+                await self.auto_fuel.recover()
+        finally:
+            await self.async_refresh()
+
     async def async_set_electricity_plan(self, plan):
         from homeassistant.exceptions import ServiceValidationError
 

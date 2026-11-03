@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.0b11 - Acknowledge And Restore Automatic
+
+- Add a card action and targeted recovery service for retained fuel-control errors.
+- Require fresh, agreeing Heat and fuel reports, available local feedback when
+  configured, valid outdoor temperature, ULO and enabled heating control.
+- Reject recovery during windows pauses, pending commands and source handoffs.
+- Adopt the current fuel and restart the 30-minute source dwell without sending
+  HVAC commands or replaying the failed request. Persist acknowledgement and
+  activation; storage failures keep Automatic disabled.
+- Request bounded read-only Ecobee refreshes while stale reports block recovery.
+
 ## 0.4.0b10 - Heading Home Availability
 
 - Enable Heading home only in Away or Vacation, including automatic Away.

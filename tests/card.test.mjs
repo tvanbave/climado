@@ -117,6 +117,26 @@ test("Heading home is selectable only from Away or Vacation", async () => {
   assert.match(item.render(), /Heading home is active/);
 });
 
+test("recovery is an explicit guarded service and errors remain visible until confirmed", async () => {
+  const item = systemCard({hvac_mode:"heat",error:"Old timeout"});
+  const attrs = item.hass.states['sensor.climado_effective_mode'].attributes;
+  attrs.auto_fuel={enabled:false,error:'Old failure',recovery_ready:true};
+  item.hass.services.climado.recover_fuel_automation={};
+  assert.match(item.render(),/Acknowledge and restore Automatic/);
+  await item._recoverFuelAutomation(item._entities());
+  assert.equal(JSON.stringify(item.calls),JSON.stringify([['climado','recover_fuel_automation',{entry_id:'test'}]]));
+  assert.equal(attrs.auto_fuel.enabled,false);
+  assert.equal(attrs.system_control.error,'Old timeout');
+  attrs.auto_fuel.recovery_ready=false;
+  await item._recoverFuelAutomation(item._entities());
+  assert.equal(item.calls.length,1);
+  attrs.auto_fuel.recovery_ready=true;
+  item.hass.callService=async()=>{throw new Error('Fresh fuel report required');};
+  await item._recoverFuelAutomation(item._entities());
+  assert.match(item.render(),/Fresh fuel report required/);
+  assert.equal(item._systemBusy,false);
+});
+
 test("confirmed thermostat state replaces the waiting indicator", () => {
   const item = card({ command_pending: false, regulating: "bedroom", hvac_action: "cooling" });
   item.hass.states["sensor.climado_resolved_target"].state = "23.1";
