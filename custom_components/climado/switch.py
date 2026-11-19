@@ -3,12 +3,13 @@ from __future__ import annotations
 
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN
+from .const import DOMAIN, CONF_HEAT_SLEEP_ENABLED
 from .coordinator import ClimadoCoordinator
 from .entity import device_info
 
@@ -22,6 +23,7 @@ async def async_setup_entry(
             ClimadoEnableSwitch(coordinator, entry),
             ClimadoVacationSwitch(coordinator, entry),
             ClimadoWindowsSwitch(coordinator, entry),
+            ClimadoSleepHeatingSwitch(coordinator, entry),
         ]
     )
 
@@ -34,6 +36,38 @@ class _BaseSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
         self._key = key
         self._attr_unique_id = f"{entry.entry_id}_{key}"
         self._attr_device_info = device_info(entry)
+
+
+class ClimadoSleepHeatingSwitch(_BaseSwitch):
+    """Opt in to a Climado temperature hold instead of native Sleep comfort."""
+
+    _attr_name = "Climado Sleep heating target"
+    _attr_icon = "mdi:bed-thermometer"
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(self, coordinator, entry):
+        super().__init__(coordinator, entry, CONF_HEAT_SLEEP_ENABLED)
+
+    @property
+    def is_on(self):
+        return bool(self.coordinator.tune(CONF_HEAT_SLEEP_ENABLED, False))
+
+    @property
+    def extra_state_attributes(self):
+        return {"climado_key": CONF_HEAT_SLEEP_ENABLED}
+
+    async def async_turn_on(self, **kwargs):
+        await self.coordinator.async_set_heating_tunable(CONF_HEAT_SLEEP_ENABLED, True)
+        self.async_write_ha_state()
+
+    async def async_turn_off(self, **kwargs):
+        await self.coordinator.async_set_heating_tunable(CONF_HEAT_SLEEP_ENABLED, False)
+        self.async_write_ha_state()
+
+    async def async_added_to_hass(self):
+        await super().async_added_to_hass()
+        last = await self.async_get_last_state()
+        self.coordinator.set_tunable(CONF_HEAT_SLEEP_ENABLED, last is not None and last.state == "on")
 
 
 class ClimadoEnableSwitch(_BaseSwitch):

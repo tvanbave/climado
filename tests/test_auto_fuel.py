@@ -113,6 +113,114 @@ async def test_seven_am_changes_desired_source_and_schedules_boundary(engine):
     assert e.service.call_args.args[2]["hvac_mode"] == "off"
 
 
+@pytest.mark.parametrize("running", [False, True])
+async def test_morning_preset_expires_before_gas_handoff_and_home_raise(engine, running):
+    e = engine
+    await arm(e, "heat_pump")
+    e.c.set_tunable("heat_home", 21.5)
+
+    def observe(at, preset, *, source="heat_pump", mode="heat", cycling=False):
+        e.clock.set(f"2026-11-03T{at}")
+        report(e, source, mode, equipment="fan,heatPump" if cycling else "fan",
+               action="heating" if cycling else "fan")
+        attrs = dict(e.hass.states.get("climate.test").attributes)
+        attrs.update(temperature=21, preset_mode=preset)
+        e.hass.states.async_set("climate.test", mode, attrs, timestamp=e.clock.utcnow().timestamp())
+
+    observe("06:15:00", "sleep")
+    assert (await e.c._async_update_data())["mode"] == "sleep"
+    observe("06:33:00", "home")  # Ecobee's schedule moves before Climado's.
+    assert (await e.c._async_update_data())["mode"] == "thermostat_preset"
+    observe("06:59:59", "home")
+    assert (await e.c._async_update_data())["manual_hold_active"]
+    e.service.assert_not_awaited()
+
+    observe("07:00:00", "home", cycling=running)
+    data = await e.c._async_update_data()
+    assert data["auto_fuel"]["target"] == "gas"
+    assert not data["manual_hold_active"]
+    if running:
+        assert data["target"] == 21
+        assert data["applied"] is None
+        e.service.assert_not_awaited()
+        observe("07:01:00", "home")
+        data = await e.c._async_update_data()
+    assert data["reason"] == "fuel_transition"
+    e.service.assert_awaited_once()
+    assert e.service.call_args.args[2]["hvac_mode"] == "off"
+
+    observe("07:01:02", "home", mode="off")
+    await e.c._async_update_data()
+    observe("07:06:01", "home", mode="off")
+    await e.c._async_update_data()
+    assert e.service.await_count == 1
+    observe("07:06:02", "home", mode="off")
+    await e.c._async_update_data()
+    assert e.service.call_args.args[:3] == ("switch", "turn_on", {"entity_id": "switch.ecobee_aux"})
+    observe("07:06:03", "home", mode="off")  # Gas not yet confirmed.
+    await e.c._async_update_data()
+    assert e.service.await_count == 2
+    observe("07:06:04", "home", source="gas")
+    data = await e.c._async_update_data()
+    assert data["mode"] == "home" and data["target"] == 21.5
+    assert e.service.await_count == 3
+    assert e.service.call_args.args[:3] == ("climate", "set_temperature", {
+        "entity_id": "climate.test", "temperature": 21.5})
+
+
+async def test_late_morning_reports_do_not_start_new_cycle_or_starve_comfort(engine):
+    e = engine
+    await arm(e, "heat_pump")
+    e.c.set_tunable("heat_home", 21.5)
+    e.clock.set("2026-11-03T07:00:00")
+    report(e, "heat_pump")
+    e.hass.states.async_remove("sensor.outdoor")
+    for minutes in (0, 4):
+        e.clock.set(f"2026-11-03T07:0{minutes}:00")
+        data = await e.c._async_update_data()
+        assert data["reason"] == "home/waiting-for-gas"
+        assert data["target"] == 20 and not data["command_pending"]
+        e.service.assert_not_awaited()
+    e.clock.set("2026-11-03T07:05:00")
+    data = await e.c._async_update_data()
+    assert data["target"] == 21.5
+    assert e.service.call_args.args[:2] == ("climate", "set_temperature")
+    e.service.assert_awaited_once()
+
+
+@pytest.mark.parametrize("case", ["dwell", "manual_home", "lower_target", "unexpired_hold", "automatic_off"])
+async def test_price_change_only_defers_automatic_home_increases(engine, case):
+    e = engine
+    await arm(e, "heat_pump")
+    e.clock.set("2026-11-03T07:00:00")
+    report(e, "heat_pump", equipment="heatPump" if case != "dwell" else "",
+           action="heating" if case != "dwell" else "idle")
+    e.c.set_tunable("heat_home", 18 if case == "lower_target" else 21.5)
+    if case == "dwell":
+        e.c.auto_fuel.changed = e.clock.utcnow() - timedelta(minutes=29)
+    elif case == "manual_home":
+        e.c.set_manual_mode("home")
+    elif case == "unexpired_hold":
+        e.c._manual_hold = ("temp", 20)
+        e.c._manual_hold_until = e.clock.utcnow() + timedelta(hours=1)
+    elif case == "automatic_off":
+        await e.c.auto_fuel.set_enabled(False)
+    data = await e.c._async_update_data()
+    if case == "dwell":
+        assert data["reason"] == "home/waiting-for-gas" and data["target"] == 20
+        e.service.assert_not_awaited()
+        e.clock.value += timedelta(minutes=1)
+        report(e, "heat_pump")
+        assert (await e.c._async_update_data())["reason"] == "fuel_transition"
+        assert e.service.call_args.args[2]["hvac_mode"] == "off"
+    elif case == "unexpired_hold":
+        assert data["mode"] == "manual_hold" and data["target"] == 20
+        e.service.assert_not_awaited()
+    else:
+        assert data["target"] == (18 if case == "lower_target" else 21.5)
+        assert e.service.call_args.args[:2] == ("climate", "set_temperature")
+
+
 async def test_restart_during_handoff_disables_without_replay(engine):
     e = engine
     await arm(e)

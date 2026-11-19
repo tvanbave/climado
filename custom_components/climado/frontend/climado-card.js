@@ -98,7 +98,7 @@ function numericValue(value) {
 
 class ClimadoCard extends LitElement {
   static get properties() {
-    return { hass: {}, _config: {}, _draft: { state: true }, _heatSource: { state: true }, _systemBusy: { state: true }, _systemError: { state: true }, _rateBusy: { state: true }, _rateError: { state: true } };
+    return { hass: {}, _config: {}, _draft: { state: true }, _heatSource: { state: true }, _systemBusy: { state: true }, _systemError: { state: true }, _targetBusy: { state: true }, _rateBusy: { state: true }, _rateError: { state: true } };
   }
 
   static getConfigElement() {
@@ -120,6 +120,7 @@ class ClimadoCard extends LitElement {
     this._heatSource = "heat_pump";
     this._systemBusy = false;
     this._systemError = null;
+    this._targetBusy = false;
     this._rateBusy = false;
     this._rateError = null;
   }
@@ -178,7 +179,8 @@ class ClimadoCard extends LitElement {
       : [this._config.entity];
     for (const id of ids) {
       const key = this._attr(id, "climado_key");
-      if (id.startsWith("number.") && ["heat_home", "heat_away", "heat_vacation", "heat_prearrival"].includes(key)) found[key] = id;
+      if (id.startsWith("number.") && ["heat_home", "heat_sleep", "heat_away", "heat_vacation", "heat_prearrival"].includes(key)) found[key] = id;
+      else if (id.startsWith("switch.") && key === "heat_sleep_enabled") found.heat_sleep_enabled = id;
       else if (id.startsWith("select.") && (key === "electricity_plan" || id.endsWith("_electricity_plan"))) found.electricity_plan = id;
       else if (id.includes("fuel_cost_recommendation") || id.includes("fuel_recommendation")) found.fuel_recommendation = id;
       else if (id.startsWith("select.")) found.mode = id;
@@ -257,6 +259,7 @@ class ClimadoCard extends LitElement {
   }
 
   async _setHeatingTarget(entity, input) {
+    if (this._targetBusy) return;
     const value = input.value.trim() === "" ? NaN : Number(input.value);
     const min = numericValue(this._attr(entity, "min")) ?? 10;
     const max = numericValue(this._attr(entity, "max")) ?? 28;
@@ -265,12 +268,29 @@ class ClimadoCard extends LitElement {
       this._systemError = "Heating target is outside the supported range";
       return;
     }
+    this._targetBusy = true;
     try {
       await this.hass.callService("number", "set_value", { entity_id: entity, value });
       this._systemError = null;
     } catch (err) {
       input.value = this._state(entity)?.state || "";
       this._systemError = err?.message || "Heating target could not be saved";
+    } finally {
+      this._targetBusy = false;
+    }
+  }
+
+  async _setSleepTargetEnabled(entity) {
+    if (!this._available(entity) || this._targetBusy) return;
+    this._targetBusy = true;
+    try {
+      const service = this._state(entity).state === "on" ? "turn_off" : "turn_on";
+      await this.hass.callService("switch", service, { entity_id: entity });
+      this._systemError = null;
+    } catch (err) {
+      this._systemError = err?.message || "Sleep target control could not be changed";
+    } finally {
+      this._targetBusy = false;
     }
   }
 
@@ -494,7 +514,7 @@ class ClimadoCard extends LitElement {
       && feedback.hvac_mode === restoration.mode ? numericValue(feedback.target) : null;
     const showLocalTarget = !unavailable && holdTemp == null && target == null && localRestoreTarget != null;
     const bigTemp = holdTemp != null ? holdTemp : target ?? (showLocalTarget ? localRestoreTarget : null);
-    const bigLabel = holdTemp != null ? "Hold" : eff === "thermostat_preset" ? "Thermostat target" : regulating === "bedroom" ? "Bedroom target" : "Target";
+    const bigLabel = holdTemp != null ? "Hold" : eff === "thermostat_preset" ? "Thermostat target" : reason === "sleep/climado-target" ? "Sleep target" : regulating === "bedroom" ? "Bedroom target" : "Target";
     const restoreTitle = restoration?.phase === "pausing" ? "Finishing pause"
       : ({heat: "Restoring heating", cool: "Restoring cooling", off: "Restoring Off"})[restoration?.mode] || "Restoring thermostat";
     const title = unavailable ? "Unavailable" : restoring ? restoreTitle : reason === "fuel_transition" ? "Changing source" : reason === "thermostat_off" ? "System off" : reason === "system_mode_pending" ? "Waiting" : eff === "thermostat_preset" && holdVal?.[0] === "preset" ? `Thermostat ${this._humanMode(holdVal[1])}` : this._humanMode(eff);
@@ -825,14 +845,29 @@ class ClimadoCard extends LitElement {
   }
 
   _renderHeatingTargets(e) {
-    const targets = [["heat_home", "Home"], ["heat_away", "Away"], ["heat_vacation", "Vacation"], ["heat_prearrival", "Pre-arrival"]].filter(([key]) => e[key]);
+    const targets = [["heat_home", "Home"], ["heat_sleep", "Sleep"], ["heat_away", "Away"], ["heat_vacation", "Vacation"], ["heat_prearrival", "Pre-arrival"]].filter(([key]) => e[key]);
     if (!targets.length) return html``;
+    const sleepEnabled = this._state(e.heat_sleep_enabled)?.state === "on";
+    const mode = this._state(e.effective_mode)?.state;
+    const heating = this._attr(e.effective_mode, "hvac_mode") === "heat";
+    const waitingForGas = this._state(e.reason)?.state === "home/waiting-for-gas";
+    const activeKey = heating && !waitingForGas ? ({home: "heat_home", sleep: sleepEnabled ? "heat_sleep" : null,
+      away: "heat_away", vacation: "heat_vacation", pre_arrival: "heat_prearrival"})[mode] : null;
+    const activeTarget = numericValue(this._state(e.target)?.state);
     return html`<details class="heating-targets"><summary>Heating targets</summary>
-      <div class="target-inputs">${targets.map(([key, label]) => html`<label>${label} (°C)
+      ${heating && activeTarget !== null ? html`<div class="control-note" role="status">Active: ${this._humanMode(mode)} · ${this._temp(activeTarget)}${mode === "sleep" && !sleepEnabled ? " · Ecobee" : ""}</div>` : ""}
+      <div class="target-inputs">${targets.map(([key, label]) => html`<label>${label} (°C)${key === activeKey ? " · Active" : key === "heat_sleep" && !sleepEnabled ? " · Saved only" : ""}
         <input type="number" aria-label=${`Heating ${label} target`} .value=${this._available(e[key]) ? this._state(e[key]).state : ""}
           min=${this._attr(e[key], "min") ?? 10} max=${this._attr(e[key], "max") ?? 28} step=${this._attr(e[key], "step") ?? .5}
-          ?disabled=${!this._available(e[key])} @change=${event => this._setHeatingTarget(e[key], event.target)}>
-      </label>`)}</div><div class="control-note">Sleep: Ecobee comfort setting</div>
+          ?disabled=${!this._available(e[key]) || this._targetBusy} @change=${event => this._setHeatingTarget(e[key], event.target)}>
+      </label>`)}</div>
+      ${e.heat_sleep_enabled ? html`<label class="sleep-target-toggle">
+        <ha-switch aria-label="Use Climado Sleep target" .checked=${sleepEnabled}
+          .disabled=${!this._available(e.heat_sleep_enabled) || this._targetBusy}
+          @change=${() => this._setSleepTargetEnabled(e.heat_sleep_enabled)}></ha-switch>
+        <span>Use Climado Sleep target</span>
+      </label>` : ""}
+      <div class="control-note">${sleepEnabled ? "Sleep: Climado temperature hold · Ecobee sensor selection" : "Sleep: Ecobee comfort setting"}</div>
       ${this._systemError ? html`<div class="system-error" role="alert">${this._systemError}</div>` : ""}
     </details>`;
   }
@@ -938,7 +973,9 @@ class ClimadoCard extends LitElement {
       manual_hold: "Respecting your manual change",
       thermostat_preset: "Following thermostat preset until the next Climado transition",
       manual_sleep: "Sleep (manual)",
+      "home/waiting-for-gas": "Waiting for gas before raising the Home target",
       "night/ecobee-sleep": heating ? "Overnight bedroom comfort" : "Overnight — cooling the bedroom",
+      "sleep/climado-target": "Sleep heating comfort",
       "night/fallback": "Overnight",
       disabled: "Climado is off",
     };
@@ -1012,6 +1049,8 @@ class ClimadoCard extends LitElement {
       .heating-targets summary { cursor: pointer; font-size: 14px; font-weight: 600; padding: 6px 0; }
       .target-inputs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 10px 0; }
       .target-inputs label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; min-width: 0; }
+      .sleep-target-toggle { display: flex; align-items: center; gap: 10px; font-size: 14px; margin: 10px 0; }
+      .sleep-target-toggle ha-switch { flex: 0 0 auto; }
       .target-inputs input { box-sizing: border-box; width: 100%; min-width: 0; height: 40px; font: inherit; font-size: 16px; background: var(--card-background-color, white); color: var(--primary-text-color); border: 1px solid var(--divider-color); border-radius: 4px; padding: 6px; }
       .system-controls { padding: 12px 0; border-top: 1px solid var(--divider-color); border-bottom: 1px solid var(--divider-color); }
       .system-label { font-size: 13px; font-weight: 600; margin: 0 0 6px; }
@@ -1411,4 +1450,4 @@ window.customCards.push({
   documentation: "https://github.com/tvanbave/climado",
 });
 
-console.info("%c CLIMADO-CARD %c 0.4.0b11 ", "background:#1565c0;color:#fff", "");
+console.info("%c CLIMADO-CARD %c 0.4.0b12 ", "background:#1565c0;color:#fff", "");

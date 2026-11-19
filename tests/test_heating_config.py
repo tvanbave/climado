@@ -1,6 +1,6 @@
 """Heating setup is additive and never opts an existing installation in."""
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -51,10 +51,43 @@ def test_heating_and_cooling_number_ids_are_distinct():
     keys = [spec[0] for spec in NUMBER_TUNABLES]
     assert len(keys) == len(set(keys))
     assert {"comfort_home", "away_temp", "vacation_temp", "prearrival_target"} <= set(keys)
-    assert {"heat_home", "heat_away", "heat_vacation", "heat_prearrival"} <= set(keys)
+    assert {"heat_home", "heat_sleep", "heat_away", "heat_vacation", "heat_prearrival"} <= set(keys)
 
 
 def test_prearrival_service_schema_accepts_each_season_threshold():
     assert _START_SCHEMA({"only_if_below": 19})["only_if_below"] == 19
     assert _START_SCHEMA({"only_if_above": 25})["only_if_above"] == 25
     assert _START_SCHEMA({"lead_minutes": 0})["lead_minutes"] == 0
+
+
+@pytest.mark.parametrize("saved,expected", [(None, False), ("off", False), ("on", True)])
+async def test_sleep_switch_restores_only_explicit_opt_in(engine, monkeypatch, saved, expected):
+    from homeassistant.helpers.update_coordinator import CoordinatorEntity
+    from custom_components.climado.switch import ClimadoSleepHeatingSwitch
+
+    monkeypatch.setattr(CoordinatorEntity, "async_added_to_hass", AsyncMock())
+    switch = ClimadoSleepHeatingSwitch(engine.c, engine.entry)
+    monkeypatch.setattr(switch, "async_get_last_state", AsyncMock(
+        return_value=SimpleNamespace(state=saved) if saved else None))
+    await switch.async_added_to_hass()
+    assert switch.is_on is expected
+    assert switch.extra_state_attributes["climado_key"] == "heat_sleep_enabled"
+    engine.service.assert_not_called()
+
+
+async def test_sleep_number_restore_and_edit(engine, monkeypatch):
+    from homeassistant.helpers.update_coordinator import CoordinatorEntity
+    from custom_components.climado.number import ClimadoNumber
+
+    monkeypatch.setattr(CoordinatorEntity, "async_added_to_hass", AsyncMock())
+    spec = next(spec for spec in NUMBER_TUNABLES if spec[0] == "heat_sleep")
+    number = ClimadoNumber(engine.c, engine.entry, *spec)
+    monkeypatch.setattr(number, "async_get_last_number_data", AsyncMock(
+        return_value=SimpleNamespace(native_value=21.5)))
+    monkeypatch.setattr(number, "async_write_ha_state", Mock())
+    monkeypatch.setattr(engine.c, "async_request_refresh", AsyncMock())
+    await number.async_added_to_hass()
+    assert number.native_value == engine.c.tune("heat_sleep") == 21.5
+    await number.async_set_native_value(22)
+    assert number.native_value == engine.c.tune("heat_sleep") == 22
+    engine.c.async_request_refresh.assert_awaited_once()

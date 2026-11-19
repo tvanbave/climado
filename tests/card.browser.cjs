@@ -15,7 +15,7 @@ const assert = require('node:assert/strict');
       if (route.request().url().endsWith('card.js')) return route.fulfill({ contentType: 'text/javascript',
         body: fs.readFileSync(path.join(__dirname, '../custom_components/climado/frontend/climado-card.js'), 'utf8') });
       return route.fulfill({ contentType: 'text/html', body: `<!doctype html><html><head><style>
-        body { margin: 12px; background: #fafafa; font: 16px Arial; --primary-color:#009ac1; --primary-text-color:#222; --secondary-text-color:#666; --card-background-color:white; --divider-color:#ddd; }
+        body { margin: 12px; background: #fafafa; font: 16px Arial; color:var(--primary-text-color); --primary-color:#009ac1; --primary-text-color:#222; --secondary-text-color:#666; --card-background-color:white; --divider-color:#ddd; }
         climado-card { display:block; max-width:600px; margin:auto; }
       </style></head><body><script type="module">
         class Switch extends HTMLElement {
@@ -343,6 +343,51 @@ const assert = require('node:assert/strict');
     }
     await page.evaluate(()=>window.report({auto_fuel:{enabled:false,error:'Previous request timed out',recovery_ready:false,recovery_blocked_reason:'Waiting for fresh local feedback'}}));
     assert.equal(await recover.isDisabled(),true);
+    await page.evaluate(async()=>{
+      const c=window.card;
+      const states={...c.hass.states,
+        'number.climado_heat_sleep':{state:'20',attributes:{climado_key:'heat_sleep',min:10,max:28,step:.5}},
+        'switch.climado_sleep_target':{state:'off',attributes:{climado_key:'heat_sleep_enabled'}},
+        'sensor.climado_effective_mode':{state:'sleep',attributes:{hvac_mode:'heat',hvac_action:'idle',main_temp:21.3,bedroom_temp:20.9,regulating:'bedroom'}},
+        'sensor.climado_control_reason':{state:'night/ecobee-sleep',attributes:{}},
+        'sensor.climado_resolved_target':{state:'21',attributes:{}}
+      };
+      c.hass={...c.hass,states,entities:Object.fromEntries(Object.keys(states).map(id=>[id,{device_id:'test'}]))};
+      window.calls=[];
+      await c.updateComplete;
+    });
+    await page.getByText('Active: Sleep · 21° · Ecobee',{exact:true}).waitFor();
+    await page.getByLabel('Heating Sleep target',{exact:true}).fill('21.5');
+    await page.getByLabel('Heating Sleep target',{exact:true}).press('Tab');
+    await page.locator('ha-switch[aria-label="Use Climado Sleep target"] input').click();
+    assert.deepEqual(await page.evaluate(()=>window.calls),[
+      ['number','set_value',{entity_id:'number.climado_heat_sleep',value:21.5}],
+      ['switch','turn_on',{entity_id:'switch.climado_sleep_target'}]
+    ]);
+    await page.evaluate(async()=>{
+      const c=window.card;
+      c.hass={...c.hass,states:{...c.hass.states,
+        'number.climado_heat_sleep':{state:'21.5',attributes:{climado_key:'heat_sleep',min:10,max:28,step:.5}},
+        'switch.climado_sleep_target':{state:'on',attributes:{climado_key:'heat_sleep_enabled'}},
+        'sensor.climado_resolved_target':{state:'21.5',attributes:{}},
+        'sensor.climado_control_reason':{state:'sleep/climado-target',attributes:{}}
+      }};
+      await window.report({regulating:'thermostat'});
+    });
+    assert.equal(await page.locator('.tlabel').textContent(),'Sleep target');
+    await page.getByText('Sleep (°C) · Active',{exact:true}).waitFor();
+    for(const dark of [false,true]) {
+      await page.evaluate(dark=>{
+        document.body.style.cssText=dark?'margin:12px;background:#181818;font:16px Arial;--primary-color:#009ac1;--primary-text-color:#eee;--secondary-text-color:#bbb;--card-background-color:#222;--divider-color:#555;':'';
+      },dark);
+      for(const width of [320,390,1100]) {
+        await page.setViewportSize({width,height:1100});
+        await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+        const overflow=await page.locator('.target-inputs,.target-inputs label,.target-inputs input,.sleep-target-toggle,.control-note').evaluateAll(nodes=>nodes.filter(n=>n.scrollWidth>n.clientWidth+1 || n.getBoundingClientRect().right>innerWidth).map(n=>n.className));
+        assert.deepEqual(overflow,[]);
+        await page.screenshot({path:path.join(os.tmpdir(),`climado-sleep-target-${dark?'dark':'light'}-${width}.png`),fullPage:true});
+      }
+    }
     assert.deepEqual(errors,[]);
     console.log('Targets, source draft, explicit Heat request, observed state and Windows guards passed; no page errors.');
   } finally { await browser.close(); }

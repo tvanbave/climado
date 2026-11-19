@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.4.0b12 - Morning Fuel Changeover and Sleep Heating Target
+
+- At the end of ULO, expire overnight holds before selecting fuel. When moving
+  from heat pump to gas, defer the scheduled Home increase until gas is
+  confirmed. Keep the current cycle, dwell and equipment rest protections.
+  If required telemetry stays unavailable for five minutes before a handoff,
+  allow normal comfort control without attempting an unverified switch.
+
+- Add a saved Heating Sleep temperature and an opt-in Use Climado Sleep target
+  switch to the card. Existing installations retain native Ecobee Sleep.
+- Apply the configured temperature during scheduled or manual Sleep, preserving
+  fuel selection, safety pauses, morning expiry and subsequent Ecobee holds.
+- Identify the active profile separately from saved temperatures. A Climado
+  Sleep hold does not claim bedroom-only sensor control or change Ecobee's
+  comfort program. Disabling the override returns to native Sleep comfort.
+
 ## 0.4.0b11 - Acknowledge And Restore Automatic
 
 - Add a card action and targeted recovery service for retained fuel-control errors.

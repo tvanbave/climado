@@ -285,3 +285,113 @@ async def test_heat_home_exits_sleep_even_with_equal_target(engine):
     data = await engine.c._async_update_data()
     assert data["mode"] == "sleep"
     assert engine.c.manual_mode == "auto"
+
+
+@pytest.mark.parametrize("forced", [False, True])
+async def test_climado_sleep_target_and_next_boundary(engine, forced):
+    e = engine
+    e.entry.options["heating_enabled"] = True
+    heat(e, aux_heat="on")
+    e.clock.set("2026-09-07T23:30:00" if not forced else "2026-09-07T12:00:00")
+    e.c.set_tunable("heat_sleep", 21.5)
+    e.c.set_tunable("heat_sleep_enabled", True)
+    if forced:
+        e.c.set_manual_mode("sleep")
+    data = await e.c._async_update_data()
+    assert data["mode"] == "sleep"
+    assert data["reason"] == "sleep/climado-target"
+    assert data["target"] == data["applied"] == 21.5
+    assert data["regulating"] == "thermostat"
+    assert e.hass.states.get("climate.test").attributes["aux_heat"] == "on"
+    assert e.service.call_args.args[1:] == ("set_temperature", {"entity_id": "climate.test", "temperature": 21.5})
+    e.service.reset_mock()
+    await e.c._async_update_data()
+    e.service.assert_not_called()
+    e.clock.set("2026-09-08T07:00:00")
+    data = await e.c._async_update_data()
+    assert data["mode"] == "home"
+    assert data["target"] == 20
+
+
+@pytest.mark.parametrize("cooling,enabled", [(False, False), (True, True)])
+async def test_sleep_target_opt_in_never_changes_cooling_or_legacy_sleep(engine, cooling, enabled):
+    e = engine
+    e.entry.options["heating_enabled"] = True
+    if not cooling:
+        heat(e)
+    e.clock.set("2026-09-07T23:30:00")
+    e.c.set_tunable("heat_sleep", 21.5)
+    e.c.set_tunable("heat_sleep_enabled", enabled)
+    data = await e.c._async_update_data()
+    assert data["reason"] == "night/ecobee-sleep"
+    assert e.service.call_args.args[1] == "set_preset_mode"
+
+
+async def test_sleep_edit_replaces_manual_hold_but_inactive_home_edit_does_not(engine, monkeypatch):
+    e = engine
+    from unittest.mock import AsyncMock
+
+    e.entry.options["heating_enabled"] = True
+    heat(e)
+    e.clock.set("2026-09-07T23:30:00")
+    e.c.set_tunable("heat_sleep_enabled", True)
+    e.c.set_tunable("heat_sleep", 21)
+    await e.c._async_update_data()
+    e.clock.set("2026-09-07T23:40:00")
+    heat(e, temperature=22, preset_mode="temp")
+    data = await e.c._async_update_data()
+    assert data["mode"] == "manual_hold"
+    assert data["target"] == 22
+    monkeypatch.setattr(e.c, "async_request_refresh", AsyncMock())
+    await e.c.async_set_heating_tunable("heat_home", 21.5)
+    assert e.c._manual_hold is not None
+    await e.c.async_set_heating_tunable("heat_sleep", 21.5)
+    data = await e.c._async_update_data()
+    assert data["mode"] == "sleep"
+    assert not data["manual_hold_active"]
+    assert data["target"] == 21.5
+    await e.c.async_set_heating_tunable("heat_sleep_enabled", False)
+    data = await e.c._async_update_data()
+    assert data["reason"] == "night/ecobee-sleep"
+    assert e.service.call_args.args[1] == "set_preset_mode"
+
+
+@pytest.mark.parametrize("block", ["off", "disabled", "heating_disabled", "windows", "vacation", "away"])
+async def test_sleep_target_preserves_priority_and_safety(engine, block):
+    e = engine
+    e.entry.options["heating_enabled"] = block != "heating_disabled"
+    heat(e)
+    e.clock.set("2026-09-07T23:30:00")
+    e.c.set_tunable("heat_sleep_enabled", True)
+    e.c.set_tunable("heat_sleep", 21.5)
+    if block == "off":
+        e.hass.states.async_set("climate.test", "off", e.hass.states.get("climate.test").attributes)
+    elif block == "disabled":
+        e.c.enabled = False
+    elif block == "windows":
+        await e.c.async_set_windows_open(True)
+        e.service.reset_mock()
+    elif block == "vacation":
+        e.c.vacation = True
+    elif block == "away":
+        e.c.set_manual_mode("away")
+    data = await e.c._async_update_data()
+    assert data["target"] != 21.5
+    assert all(call.args[2].get("temperature") != 21.5 for call in e.service.call_args_list)
+
+
+async def test_sleep_target_waits_for_confirmation_and_reports_failure(engine):
+    e = engine
+    e.entry.options["heating_enabled"] = True
+    heat(e)
+    e.clock.set("2026-09-07T23:30:00")
+    e.c.set_tunable("heat_sleep_enabled", True)
+    e.c.set_tunable("heat_sleep", 21.5)
+    e.service.side_effect = RuntimeError("offline")
+    data = await e.c._async_update_data()
+    assert data["target"] == 21.5
+    assert data["applied"] is None
+    assert data["command_pending"]
+    assert data["command_error"] == "offline"
+    await e.c._async_update_data()
+    assert e.service.call_count == 1

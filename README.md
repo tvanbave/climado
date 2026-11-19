@@ -18,7 +18,10 @@ setting, with everything configurable from the UI (no YAML).
 - **Native night handoff** — at the night window start, Climado activates the
   ecobee's own **Sleep comfort setting** (a true closed loop on your bedroom
   sensor that reaches target and cycles off). The overnight temperature is the
-  ecobee Sleep comfort's setpoint — edit it in the ecobee app.
+  ecobee Sleep comfort's setpoint by default. For heating, the card also offers
+  a saved **Sleep** temperature and **Use Climado Sleep target** toggle. Set the
+  temperature before enabling the toggle; it then applies to both scheduled
+  and manually selected Sleep. Cooling continues using native Sleep comfort.
 - **Manual pre‑arrival ("Heading home")** — a button/service that pre‑cools ahead
   of arrival; the button always engages, the service can be made conditional on
   the house having drifted warm. Auto‑expires on arrival.
@@ -94,7 +97,7 @@ Ecobee reports the Sleep preset, rather than displaying the previous target.
 - `switch.*_climado_control` — master enable. `switch.*_vacation` — vacation hold.
 - `button.*_heading_home_pre_cool`, `button.*_resume_clear_pre_cool`.
 - `sensor.*` — effective mode, control reason, resolved target, rate tier, presence.
-- `number.*` / `time.*` (Configuration category) — tunables: setpoints, away delay, night window, on-peak coast, pre-cool, pre-arrival. (The overnight temperature is *not* here — it's the ecobee Sleep comfort's setpoint.)
+- `number.*` / `time.*` (Configuration category) — tunables: setpoints, away delay, night window, on-peak coast, pre-cool, pre-arrival. Heating Sleep is used only with **Use Climado Sleep target** enabled; otherwise Sleep remains the Ecobee comfort setting.
 
 ## Services
 - `climado.start_pre_arrival` (`lead_minutes?`, `target?`, `only_if_above?`, `force?`).
@@ -232,7 +235,21 @@ Existing installations remain cooling-only unless heating targets are
 explicitly enabled in Configure. Review the separate device Configuration
 numbers first: Heating Home (20 C), Away (17 C), Vacation (15 C), and pre-arrival
 (20 C). These are editable starting values, not confirmed preferences for your
-home. Night control uses Ecobee's own Sleep heating target and assigned sensors.
+home. Night control uses Ecobee's own Sleep heating target and assigned sensors
+unless **Use Climado Sleep target** is enabled. The optional Heating Sleep
+number defaults to 20 C but does not affect an existing installation until
+explicitly enabled. It creates a normal thermostat temperature hold, not an
+edit to Ecobee's comfort program or sensor participation. The card labels it
+**Sleep target**, not **Bedroom target**, because a hold does not establish
+which sensors Ecobee uses. Turning the toggle off returns to native Sleep.
+
+The card identifies the active heating profile and target separately from
+saved temperatures. Home edits do not change a sleeping thermostat. An
+explicit Sleep target edit during Sleep replaces an older manual temperature
+hold; subsequent adjustments on Ecobee are still respected until the next
+Climado day/night boundary. At the morning boundary, normal Home/Away logic
+resumes. Windows pauses, disabled control, fuel handoffs and heating opt-out
+continue to block heating commands.
 
 Heating currently requires Celsius thermostat units. It follows the selected
 `heat` mode and leaves fuel selection untouched; `heat_cool` is unsupported.

@@ -4,7 +4,7 @@
     "step": {
       "user": {
         "title": "Add a Climado zone",
-        "description": "Pick the thermostat and sensors. Heating is optional, requires Celsius units, and never switches Heat/Aux. Review the Heating configuration temperatures on the Climado device before enabling heating targets. Sleep uses the ecobee Sleep heating setpoint.",
+        "description": "Pick the thermostat and sensors. Heating is optional, requires Celsius units, and never switches Heat/Aux. Review the Heating configuration temperatures on the Climado device before enabling heating targets. Sleep uses the ecobee comfort setting unless Use Climado Sleep target is enabled.",
         "data": {
           "name": "Zone name",
           "climate_entity": "Thermostat (climate entity)",
@@ -47,7 +47,7 @@
     "step": {
       "init": {
         "title": "Climado options",
-        "description": "Setpoints and timeouts are Configuration entities on the Climado device. Review the separate Heating temperatures before enabling heating targets. Heating requires Celsius units and preserves your selected Heat/Aux source; it does not provide automatic furnace fallback. Sleep uses the ecobee Sleep comfort setting.",
+        "description": "Setpoints and timeouts are Configuration entities on the Climado device. Review the separate Heating temperatures before enabling heating targets. Heating requires Celsius units and preserves your selected Heat/Aux source; it does not provide automatic furnace fallback. Sleep uses the ecobee comfort setting unless Use Climado Sleep target is enabled.",
         "data": {
           "name": "Zone name",
           "climate_entity": "Thermostat (climate entity)",

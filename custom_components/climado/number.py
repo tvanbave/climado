@@ -58,6 +58,5 @@ class ClimadoNumber(CoordinatorEntity, RestoreNumber):
 
     async def async_set_native_value(self, value: float) -> None:
         self._attr_native_value = value
-        self.coordinator.set_tunable(self._key, value)
         self.async_write_ha_state()
-        await self.coordinator.async_request_refresh()
+        await self.coordinator.async_set_heating_tunable(self._key, value)

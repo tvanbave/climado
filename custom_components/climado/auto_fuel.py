@@ -11,6 +11,7 @@ from .temperature import temperature_reading
 
 MINIMUM_DWELL = timedelta(minutes=30)
 OFF_TIME = timedelta(minutes=5)
+REPORT_GRACE = timedelta(minutes=5)
 TRANSITION_TIMEOUT = timedelta(minutes=20)
 
 
@@ -36,6 +37,8 @@ class AutoFuel:
         self.stopped = None
         self.reason = "Automatic fuel selection is off"
         self.outdoor = None
+        self.defer_home_raise = False
+        self._unready_since = None
         self._store = Store(coordinator.hass, 1, f"climado.{coordinator.entry.entry_id}.auto_fuel")
 
     def _context(self):
@@ -139,6 +142,7 @@ class AutoFuel:
             raise
         self.changed = dt_util.utcnow()
         self.target = self.stopped = None
+        self._unready_since = None
         self.reason = "Waiting for minimum source time" if enabled else "Automatic fuel selection is off"
 
     async def _fail(self, reason):
@@ -158,6 +162,7 @@ class AutoFuel:
 
     async def step(self, tier):
         """Return true while owning an Off-to-Heat handoff, blocking comfort writes."""
+        self.defer_home_raise = False
         if not self.enabled:
             if ((self.error or self.c.system.error)
                     and self.recovery_blocked_reason() == "Waiting for fresh Ecobee mode and fuel reports"):
@@ -192,7 +197,16 @@ class AutoFuel:
             if reason == "Waiting for fresh Ecobee mode and fuel reports":
                 self.c.feedback.request_refresh()
             self.stopped = None
+            # Give late reports a chance to arrive at a rate boundary, without
+            # indefinitely withholding comfort during a telemetry outage.
+            if (not self.phase and tier != "ultra_low" and self.expected == "heat_pump"
+                    and c._hvac_mode() == "heat" and c._aux_selection() is not True):
+                self._unready_since = self._unready_since or now
+                self.defer_home_raise = now - self._unready_since < REPORT_GRACE
+            else:
+                self._unready_since = None
             return bool(self.phase)
+        self._unready_since = None
         mode = c._hvac_mode()
         current = selected_source(mode, c._aux_selection())
         if self.phase == "starting":
@@ -233,6 +247,8 @@ class AutoFuel:
         self.reason = "Keeping current heating source"
         if self.target == current:
             return False
+        # Preserve the old setpoint while waiting for dwell or cycle completion.
+        self.defer_home_raise = tier != "ultra_low" and current == "heat_pump" and self.target == "gas"
         if now - self.changed < MINIMUM_DWELL:
             self.reason = "Waiting for minimum source time"
             return False

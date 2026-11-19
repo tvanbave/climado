@@ -47,10 +47,13 @@ from .const import (
     CONF_OUTDOOR_TEMP_SENSOR,
     CONF_HEAT_COST,
     CONF_HEAT_HOME,
+    CONF_HEAT_SLEEP,
+    CONF_HEAT_SLEEP_ENABLED,
     CONF_HEAT_AWAY,
     CONF_HEAT_VACATION,
     CONF_HEAT_PREARRIVAL,
     DEFAULT_HEAT_HOME,
+    DEFAULT_HEAT_SLEEP,
     DEFAULT_HEAT_AWAY,
     DEFAULT_HEAT_VACATION,
     DEFAULT_HEAT_PREARRIVAL,
@@ -216,6 +219,26 @@ class ClimadoCoordinator(DataUpdateCoordinator):
 
     def set_tunable(self, key, value) -> None:
         self.tunables[key] = value
+
+    def _uses_sleep_schedule(self) -> bool:
+        now = dt_util.now()
+        return self.manual_mode == MODE_SLEEP or (
+            self.manual_mode == MODE_AUTO and _in_window(
+                now.time(),
+                _parse_time(self.tune(CONF_NIGHT_START, DEFAULT_NIGHT_START)),
+                _parse_time(self.tune(CONF_NIGHT_END, DEFAULT_NIGHT_END)),
+            )
+        )
+
+    async def async_set_heating_tunable(self, key, value) -> None:
+        """Apply an explicit Sleep edit without retaining an older manual hold."""
+        async with self._evaluation_lock:
+            self.set_tunable(key, value)
+            if (key in (CONF_HEAT_SLEEP, CONF_HEAT_SLEEP_ENABLED)
+                    and self._hvac_mode() == "heat" and self._uses_sleep_schedule()
+                    and (key == CONF_HEAT_SLEEP_ENABLED or self.tune(CONF_HEAT_SLEEP_ENABLED, False))):
+                self.clear_manual_hold()
+        await self.async_request_refresh()
 
     def set_manual_mode(self, mode: str) -> None:
         """Set a mode override; comfort overrides expire at their next boundary."""
@@ -877,6 +900,15 @@ class ClimadoCoordinator(DataUpdateCoordinator):
     async def _evaluate(self) -> dict:
         self.system.confirm()
         await self._evaluate_auto_windows()
+        # Fuel and comfort must see the same hold at a schedule boundary. In
+        # particular, Ecobee's early Home preset stops blocking fuel at 07:00.
+        if self._manual_hold_until and dt_util.utcnow() >= self._manual_hold_until:
+            # Do not erase an in-flight comfort command when retiring the baseline.
+            self._manual_hold = None
+            self._manual_hold_until = None
+            self._last_commanded = None
+        if self._hvac_context == self._fuel_context():
+            self._confirm_pending()
         fuel_transition = await self.auto_fuel.step(
             self._plan().tier_at(dt_util.now(), self._is_workday()).tier_id
         )
@@ -974,9 +1006,6 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         # ecobee's "hold until next transition". Explicit select choices,
         # Resume, vacation/away/pre-arrival all supersede it.
         actual = self._thermostat_actual()
-        self._confirm_pending()
-        if self._manual_hold_until and dt_util.utcnow() >= self._manual_hold_until:
-            self.clear_manual_hold()
         if forced is None and not self.vacation:
             grace_over = self._pending_command is None and self._last_commanded is not None and (
                 self._commanded_at is None
@@ -1027,6 +1056,9 @@ class ClimadoCoordinator(DataUpdateCoordinator):
             # Also honors a manual "sleep" override at any time of day.
             mode, action = MODE_SLEEP, ("preset", "sleep")
             reason = "manual_sleep" if forced == MODE_SLEEP else "night/ecobee-sleep"
+            if self._hvac_mode() == "heat" and self.tune(CONF_HEAT_SLEEP_ENABLED, False):
+                action = ("temp", float(self.tune(CONF_HEAT_SLEEP, DEFAULT_HEAT_SLEEP)))
+                reason = "sleep/climado-target"
         else:
             offset, rtier = rate_offset(plan, now, is_workday)
             mode, action, reason = MODE_HOME, ("temp", comfort_home + offset), f"home/{rtier}"
@@ -1038,15 +1070,19 @@ class ClimadoCoordinator(DataUpdateCoordinator):
             # Report the observed target, but do not issue another command.
             target = self._manual_hold[1] if self._manual_hold and self._manual_hold[0] == "temp" else None
             if mode == MODE_THERMOSTAT_PRESET:
-                try:
-                    reported = float(self._climate_attr("temperature"))
-                    target = reported if math.isfinite(reported) else None
-                except (TypeError, ValueError):
-                    target = None
+                target = self._reported_target()
             applied = None
         else:
             target = action[1]
-            applied = await self._apply(target)
+            reported = self._reported_target()
+            retry_due = self._pending_command and self._retry_at and dt_util.utcnow() >= self._retry_at
+            if (mode == MODE_HOME and forced is None and self.auto_fuel.defer_home_raise
+                    and reported is not None and target > reported and not retry_due):
+                # Do not start or prolong a compressor cycle with a scheduled
+                # increase. Leave the current thermostat target in force.
+                reason, target, applied = "home/waiting-for-gas", reported, None
+            else:
+                applied = await self._apply(target)
         if control_context != self._fuel_context():
             # A service awaited above may finish after the user changes modes.
             # Never publish its old target as the new season's resolved target.
@@ -1067,10 +1103,20 @@ class ClimadoCoordinator(DataUpdateCoordinator):
         state["regulating"] = "bedroom" if mode == MODE_SLEEP or (
             mode == MODE_THERMOSTAT_PRESET and self._manual_hold == ("preset", "sleep")
         ) else "main"
+        if reason == "sleep/climado-target":
+            # A temperature hold does not establish which Ecobee sensors participate.
+            state["regulating"] = "thermostat"
         state["next_transition"] = self._next_transition(
             now, night_start, night_end, is_night, plan, is_workday
         )
         return state
+
+    def _reported_target(self):
+        try:
+            target = float(self._climate_attr("temperature"))
+        except (TypeError, ValueError):
+            return None
+        return target if math.isfinite(target) else None
 
     async def _apply(self, target):
         if target is None:

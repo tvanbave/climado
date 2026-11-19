@@ -77,6 +77,19 @@ test("failed command shows retry status", () => {
   assert.doesNotMatch(view, /Waiting for thermostat confirmation/);
 });
 
+test("morning gas wait shows the retained target rather than the saved increase", () => {
+  const item = card({hvac_mode:"heat"});
+  item.hass.states["sensor.climado_effective_mode"].state = "home";
+  item.hass.states["sensor.climado_control_reason"].state = "home/waiting-for-gas";
+  item.hass.states["sensor.climado_resolved_target"].state = "21";
+  item.hass.states["number.saved_home"] = {state:"21.5",attributes:{climado_key:"heat_home"}};
+  item.hass.entities["number.saved_home"] = {device_id:"test"};
+  const view = item.render();
+  assert.match(view, /Waiting for gas before raising the Home target/);
+  assert.match(view, /class="target">21°/);
+  assert.doesNotMatch(view, /Home \(°C\) · Active/);
+});
+
 test("external thermostat preset shows its target without claiming a manual change", () => {
   const item = card({manual_hold_active:true,manual_hold_value:["preset","home"],
     manual_hold_until:"2026-10-22T11:00:00Z"});
@@ -537,6 +550,40 @@ test("heating targets use entity metadata even after an entity is renamed", asyn
   await item._setHeatingTarget("number.renamed_target", input);
   assert.equal(call, undefined);
   assert.equal(input.value, "20");
+});
+
+test("Sleep target is explicit, rename-safe and distinguishes saved Home from active Sleep", async () => {
+  const item = card({ hvac_mode: "heat", regulating: "thermostat" });
+  for (const [id, state, key] of [["number.night", "21.5", "heat_sleep"], ["number.day", "22", "heat_home"], ["switch.night_override", "off", "heat_sleep_enabled"]]) {
+    item.hass.states[id] = {state, attributes:{climado_key:key}};
+    item.hass.entities[id] = {device_id:"test"};
+  }
+  item.hass.states["sensor.climado_resolved_target"].state = "21";
+  assert.equal(item._entities().heat_sleep, "number.night");
+  assert.equal(item._entities().heat_sleep_enabled, "switch.night_override");
+  assert.match(item.render(), /Active: Sleep · 21° · Ecobee/);
+  assert.match(item.render(), /Sleep \(°C\) · Saved only/);
+  assert.doesNotMatch(item.render(), /Home \(°C\) · Active/);
+  const calls = [];
+  item.hass.callService = async (...args) => calls.push(args);
+  await item._setHeatingTarget("number.night", {value:"21.5"});
+  await item._setSleepTargetEnabled("switch.night_override");
+  assert.equal(JSON.stringify(calls), JSON.stringify([
+    ["number","set_value",{entity_id:"number.night",value:21.5}],
+    ["switch","turn_on",{entity_id:"switch.night_override"}],
+  ]));
+  assert.equal(item.hass.states["switch.night_override"].state, "off");
+  item.hass.states["switch.night_override"].state = "on";
+  item.hass.states["sensor.climado_control_reason"].state = "sleep/climado-target";
+  item.hass.states["sensor.climado_resolved_target"].state = "21.5";
+  assert.match(item.render(), /Sleep \(°C\) · Active/);
+  assert.match(item.render(), /class="tlabel">Sleep target/);
+  assert.doesNotMatch(item.render(), /Bedroom target|Saved only/);
+  item.hass.callService = async () => {throw new Error("offline");};
+  await item._setSleepTargetEnabled("switch.night_override");
+  assert.equal(item._systemError, "offline");
+  assert.equal(item._targetBusy, false);
+  assert.equal(item.hass.states["switch.night_override"].state, "on");
 });
 
 test("local heat confirmation keeps fuel confirmation distinct and shows elapsed time", () => {

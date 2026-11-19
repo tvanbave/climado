@@ -4,7 +4,7 @@ from __future__ import annotations
 from homeassistant.const import Platform
 
 DOMAIN = "climado"
-VERSION = "0.4.0b11"
+VERSION = "0.4.0b12"
 
 PLATFORMS = [
     Platform.SELECT,
@@ -43,11 +43,14 @@ CONF_ALERT_DELAY = "alert_cold_delay_minutes"
 CONF_ALERT_HEAT_MINUTES = "alert_heating_minutes"
 CONF_ALERT_MIN_RISE = "alert_minimum_rise"
 CONF_HEAT_HOME = "heat_home"
+CONF_HEAT_SLEEP = "heat_sleep"
+CONF_HEAT_SLEEP_ENABLED = "heat_sleep_enabled"
 CONF_HEAT_AWAY = "heat_away"
 CONF_HEAT_VACATION = "heat_vacation"
 CONF_HEAT_PREARRIVAL = "heat_prearrival"
 
 DEFAULT_HEAT_HOME = 20.0
+DEFAULT_HEAT_SLEEP = 20.0
 DEFAULT_HEAT_AWAY = 17.0
 DEFAULT_HEAT_VACATION = 15.0
 DEFAULT_HEAT_PREARRIVAL = 20.0
@@ -128,6 +131,7 @@ NUMBER_TUNABLES = [
     (CONF_ALERT_HEAT_MINUTES, "Heating progress check interval", 15, 180, 5, "min", "mdi:timer-alert-outline", 60),
     (CONF_ALERT_MIN_RISE, "Heating minimum temperature rise", 0.1, 3, 0.1, "°C", "mdi:thermometer-chevron-up", 0.3),
     (CONF_HEAT_HOME, "Heating Home", 10, 28, 0.5, "°C", "mdi:radiator", DEFAULT_HEAT_HOME),
+    (CONF_HEAT_SLEEP, "Heating Sleep", 10, 28, 0.5, "°C", "mdi:bed", DEFAULT_HEAT_SLEEP),
     (CONF_HEAT_AWAY, "Heating Away", 10, 28, 0.5, "°C", "mdi:radiator", DEFAULT_HEAT_AWAY),
     (CONF_HEAT_VACATION, "Heating Vacation", 10, 28, 0.5, "°C", "mdi:radiator", DEFAULT_HEAT_VACATION),
     (CONF_HEAT_PREARRIVAL, "Heating pre-arrival", 10, 28, 0.5, "°C", "mdi:home-clock", DEFAULT_HEAT_PREARRIVAL),
